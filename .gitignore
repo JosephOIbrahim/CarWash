@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+
+# Windows reserved names
+nul
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# Test outputs
+test/render/
+C:/Temp/hdcarwash_debug.txt
