@@ -1,32 +1,20 @@
 {
     "Plugins": [
         {
-            "Name": "hdCarWash",
-            "Type": "library",
-            "Root": "..",
-            "LibraryPath": "lib/hdCarWash",
-            "ResourcePath": "resources",
             "Info": {
                 "Types": {
                     "HdCarWashRendererPlugin": {
                         "bases": ["HdRendererPlugin"],
-                        "displayName": "CarWash (AI NPR)",
-                        "priority": 0
-                    }
-                },
-                "UsdRender": {
-                    "rendererDisplayName": "CarWash (AI NPR)",
-                    "rendererProductName": "HdCarWash"
-                },
-                "Schemas": {
-                    "carWashSchema": {
-                        "schemaPath": "schema/carWashSchema.usda"
-                    },
-                    "cognitiveSubstrate": {
-                        "schemaPath": "schema/cognitiveSubstrate.usda"
+                        "displayName": "CarWash",
+                        "priority": 50
                     }
                 }
-            }
+            },
+            "LibraryPath": "lib/hdCarWash.dll",
+            "Name": "hdCarWash",
+            "ResourcePath": "resources",
+            "Root": ".",
+            "Type": "library"
         }
     ]
 }
