@@ -1,8 +1,8 @@
-# hdCarWash
+# CarWash
 
 **AI-Powered Video Generation for Houdini via USD Hydra**
 
-hdCarWash is a Houdini Hydra render delegate that bridges SideFX Houdini with cutting-edge AI video generation models. Render your 3D scenes directly to AI-generated video using LTX-2, AnimateDiff, and other diffusion models through ComfyUI.
+CarWash is a Houdini Hydra render delegate that bridges SideFX Houdini with cutting-edge AI video generation models. Render your 3D scenes directly to AI-generated video using LTX-2, AnimateDiff, and other diffusion models through ComfyUI.
 
 ---
 
