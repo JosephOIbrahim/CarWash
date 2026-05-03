@@ -19,18 +19,36 @@ CarWash is a Houdini Hydra render delegate that bridges SideFX Houdini with cutt
 
 ## How It Works
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Houdini   │────▶│  hdCarWash  │────▶│   ComfyUI   │────▶│   Output    │
-│  USD Scene  │     │   Delegate  │     │    LTX-2    │     │   Video     │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-       │                   │                   │
-       │              WebSocket           AI Inference
-       │                   │                   │
-       ▼                   ▼                   ▼
-   Geometry          Depth Maps         25 Frame Video
-   Cameras           Control Images     1312×992 px
-   Lights            Prompts            25 FPS
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#0f172a','primaryTextColor':'#f8fafc','primaryBorderColor':'#0f172a',
+  'lineColor':'#475569','clusterBkg':'#f8fafc','clusterBorder':'#0f172a',
+  'fontFamily':'ui-sans-serif, system-ui, sans-serif'
+}}}%%
+flowchart LR
+    USD[("USD stage<br/>meshes · cameras · lights")]:::ext
+
+    subgraph plugin["hdCarWash plugin (C++)"]
+      direction TB
+      Pass["renderPass"]:::ours
+      Ras["rasterizer<br/>+ framebuffer"]:::ours
+      Comfy["comfyClient"]:::ours
+      Pass -->|rasterize AOVs| Ras
+      Pass -->|submit · receive| Comfy
+    end
+
+    CUI[["ComfyUI server"]]:::ext
+    LTX[["LTX-2 19B<br/>+ Gemma 3 12B"]]:::ext
+    OUT(["rendered frames<br/>viewport · EXR"]):::ext
+
+    USD ==>|Hydra sync| Pass
+    Comfy ==>|workflow JSON · HTTP/WS| CUI
+    CUI ==>|PNG frames| Comfy
+    CUI --- LTX
+    Pass ==>|AOV color| OUT
+
+    classDef ours fill:#0f172a,stroke:#0f172a,color:#f8fafc
+    classDef ext  fill:#e2e8f0,stroke:#0f172a,color:#0f172a
 ```
 
 1. **Scene Export** — hdCarWash receives USD prims from Houdini's Hydra viewport
@@ -39,6 +57,44 @@ CarWash is a Houdini Hydra render delegate that bridges SideFX Houdini with cutt
 4. **Submission** — Sends workflow to ComfyUI via WebSocket API
 5. **Generation** — LTX-2 generates video conditioned on depth maps and text prompts
 6. **Return** — Results displayed in Houdini viewport or saved to disk
+
+### Per-frame sequence
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#0f172a','primaryTextColor':'#f8fafc','primaryBorderColor':'#0f172a',
+  'lineColor':'#475569',
+  'actorBkg':'#e2e8f0','actorBorder':'#0f172a','actorTextColor':'#0f172a',
+  'signalColor':'#475569','signalTextColor':'#0f172a',
+  'noteBkgColor':'#0f172a','noteBorderColor':'#0f172a','noteTextColor':'#f8fafc',
+  'activationBkgColor':'#0f172a','activationBorderColor':'#0f172a',
+  'labelBoxBkgColor':'#0f172a','labelTextColor':'#f8fafc',
+  'fontFamily':'ui-sans-serif, system-ui, sans-serif'
+}}}%%
+sequenceDiagram
+    autonumber
+    participant Hydra
+    participant Pass as renderPass
+    participant Ras as rasterizer
+    participant Comfy as comfyClient
+    participant CUI as ComfyUI · LTX-2
+
+    Hydra->>+Pass: Execute(frame, AOV bindings)
+    Pass->>+Ras: rasterize AOVs<br/>depth · normal · object id
+    Ras-->>-Pass: framebuffer
+    Pass->>+Comfy: ProcessFrame(framebuffer, params)
+    Comfy->>CUI: POST /api/prompt · workflow JSON
+    CUI-->>Comfy: prompt_id
+    loop poll until done · ≤ 60 s
+        Comfy->>CUI: status / progress
+        CUI-->>Comfy: progress event
+    end
+    Comfy->>CUI: GET /view
+    CUI-->>Comfy: PNG bytes
+    Comfy-->>-Pass: styledImage
+    Pass-->>-Hydra: AOV color buffer
+    Note over Pass,Comfy: Render thread blocks here today. Future work moves this to a worker pool.
+```
 
 ---
 
