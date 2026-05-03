@@ -1,0 +1,56 @@
+[project]
+name = "carwash-automation"
+version = "0.1.0"
+description = "Python automation and tooling for the HdCarWash Hydra render delegate."
+requires-python = ">=3.9"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = ["build", "plugin/lib", "tests/cpp"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",   # pycodestyle + pyflakes
+  "I",             # import order
+  "B",             # flake8-bugbear
+  "UP",            # pyupgrade
+  "SIM",           # flake8-simplify
+  "TRY",           # tryceratops (no bare excepts, no swallowing)
+  "RUF",
+]
+ignore = [
+  "E501",   # line length handled by formatter
+  "TRY003", # long messages in raise
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files often legitimately swallow during fixture setup.
+"tests/**" = ["TRY"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+files = ["automation"]
+exclude = ["build/", "plugin/lib/"]
+
+[[tool.mypy.overrides]]
+module = ["websockets", "websockets.*", "hou", "_usd"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["error"]

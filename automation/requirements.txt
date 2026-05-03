@@ -1,0 +1,4 @@
+# Runtime dependencies for the CarWash automation scripts.
+# Pin exact versions for reproducibility (C7 — Reproducibility is end-to-end).
+# Install with:  pip install -r automation/requirements.txt
+websockets==12.0

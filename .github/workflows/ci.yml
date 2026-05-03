@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    name: Python (lint + type-check + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            automation/requirements.txt
+            automation/requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r automation/requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check automation tests
+
+      - name: Format check (ruff format)
+        run: ruff format --check automation tests
+
+      - name: Type check (mypy --strict)
+        run: mypy
+
+      - name: Unit tests (pytest)
+        run: pytest -ra
+
+  cpp-format:
+    name: C++ (clang-format dry-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: clang-format --dry-run
+        # Only check our own plugin sources; ignore vendored stb_image and the like.
+        run: |
+          set -e
+          mapfile -t files < <(find plugin/hdCarWash -type f \( -name '*.cpp' -o -name '*.h' \) \
+            ! -name 'stb_image*')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No C++ files found to check."
+            exit 0
+          fi
+          # Run as a check; fail on any non-zero diff. We do not block CI on
+          # whole-file reformat noise yet — flag warnings but exit 0 until the
+          # codebase has been re-formatted in a dedicated commit.
+          clang-format --dry-run -Werror "${files[@]}" || {
+            echo "::warning::clang-format diffs detected; run clang-format -i on the listed files."
+            exit 0
+          }

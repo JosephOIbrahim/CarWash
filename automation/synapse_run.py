@@ -1,71 +1,75 @@
 #!/usr/bin/env python
-"""Execute code in Houdini via Synapse - protocol discovery."""
+"""Probe the Synapse bridge with node/scene/USD-style commands."""
+
+from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import sys
+from pathlib import Path
+from typing import Any
 
-try:
-    import websockets
-except ImportError:
-    import subprocess
-    subprocess.run(["pip", "install", "websockets"], check=True)
-    import websockets
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from synapse import SynapseConnectionError, load_config
+from synapse._protocol import connect, try_command
+
+log = logging.getLogger("carwash.synapse_run")
 
 
-async def run_in_houdini():
-    uri = "ws://localhost:9999"
+async def run_in_houdini() -> None:
+    config = load_config()
+    commands: list[dict[str, Any]] = [
+        # Create node
+        {"type": "create_node", "node_type": "sphere", "parent": "/obj"},
+        # Original probe sent {"type": "node.create", ...} but overwrote "type"
+        # with "geo"; preserve the wire payload (the second value wins).
+        {"parent": "/obj", "type": "geo"},
+        # Get info
+        {"type": "get_node", "node": "/obj"},
+        {"type": "node.info", "path": "/obj"},
+        {"type": "list_nodes", "parent": "/"},
+        {"type": "get_children", "node": "/obj"},
+        # Parm
+        {"type": "get_parm", "node": "/obj", "parm": "tx"},
+        {"type": "set_parm", "node": "/obj", "parm": "tx", "value": 0},
+        # Scene query
+        {"type": "scene_info"},
+        {"type": "get_scene"},
+        {"type": "hip_info"},
+        # LOP/USD
+        {"type": "get_prim", "prim_path": "/"},
+        {"type": "stage_info"},
+        {"type": "list_prims"},
+    ]
 
-    async with websockets.connect(uri) as ws:
-        # The ping showed aliases: source, target, node, parent, parm, value, type, name, prim_path, prim_type
-        # This looks like a node-operation protocol
-
-        # Try node creation style commands
-        commands = [
-            # Create node style
-            {"type": "create_node", "node_type": "sphere", "parent": "/obj"},
-            {"type": "node.create", "parent": "/obj", "type": "geo"},
-
-            # Get info style
-            {"type": "get_node", "node": "/obj"},
-            {"type": "node.info", "path": "/obj"},
-            {"type": "list_nodes", "parent": "/"},
-            {"type": "get_children", "node": "/obj"},
-
-            # Parm style
-            {"type": "get_parm", "node": "/obj", "parm": "tx"},
-            {"type": "set_parm", "node": "/obj", "parm": "tx", "value": 0},
-
-            # Scene query
-            {"type": "scene_info"},
-            {"type": "get_scene"},
-            {"type": "hip_info"},
-
-            # LOP/USD style (based on prim_path alias)
-            {"type": "get_prim", "prim_path": "/"},
-            {"type": "stage_info"},
-            {"type": "list_prims"},
-        ]
-
+    async with connect(config) as ws:
         for cmd in commands:
-            try:
-                await ws.send(json.dumps(cmd))
-                response = await asyncio.wait_for(ws.recv(), timeout=2.0)
-                result = json.loads(response)
+            result = await try_command(ws, cmd, timeout=2.0)
+            if result is None:
+                continue
+            cmd_type = cmd.get("type", "unknown")
+            success = result.get("success", False)
+            error = result.get("error", "")
+            data = result.get("data")
 
-                cmd_type = cmd.get("type", "unknown")
-                success = result.get("success", False)
-                error = result.get("error", "")
-                data = result.get("data")
+            if success:
+                payload = json.dumps(data)[:200] if data else "success"
+                print(f"[OK] {cmd_type}: {payload}")
+            elif "Unknown" not in str(error):
+                print(f"[--] {cmd_type}: {str(error)[:100]}")
 
-                if success:
-                    print(f"[OK] {cmd_type}: {json.dumps(data)[:200] if data else 'success'}")
-                elif "Unknown" not in str(error):
-                    print(f"[--] {cmd_type}: {error[:100]}")
-            except asyncio.TimeoutError:
-                pass
-            except Exception as e:
-                print(f"[ERR] {cmd}: {e}")
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    try:
+        asyncio.run(run_in_houdini())
+    except SynapseConnectionError:
+        log.exception("Synapse connection failed")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(run_in_houdini())
+    raise SystemExit(main())
