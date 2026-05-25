@@ -5,8 +5,12 @@ conventions reflect how ComfyUI and modern gen-AI video pipelines are built toda
 
 CONFIDENCE_THRESHOLD: 0.8
 
-STATUS: planning — planner survey (t000) complete. DRAFT EXIT_CRITERIA below await human
-confirmation. NO worker runs until criteria are confirmed (CLAUDE.md Invocation rule).
+STATUS: EXECUTING — EXIT_CRITERIA CONFIRMED by human 2026-05-25. Scope bound d006 confirmed
+(structural + verified practice; no validated-video requirement). Output contract (per-frame
+vs per-clip) to be DECIDED VIA RESEARCH (t012) then human-confirmed before t032 implements.
+Dependencies: header-only JSON approved; networking lib deferred to a separate decision.
+Verification: code-review + standalone structural checks here (no Houdini/ComfyUI in container);
+full build/run deferred to a Houdini machine. Phase A research wave launched first.
 
 -----------------------------------------------------------------------------------------------
 KEY SURVEY FINDING (see beliefs c001–c006):
@@ -17,7 +21,7 @@ TF_CODING_ERROR stub. Today the engine only rasterizes depth/normal AOVs on CPU.
 modernize an orphaned integration, not greenfield.
 -----------------------------------------------------------------------------------------------
 
-DRAFT EXIT_CRITERIA (pending confirmation):
+EXIT_CRITERIA (CONFIRMED 2026-05-25):
   1. Render engine mapped in beliefs.md at confidence >= 0.8: every plugin/hdCarWash/ file has a
      recorded role; "AI path orphaned/uncompiled" claim verified.
   2. All [V] open questions (current ComfyUI API, LTX-2 node graph, text-encoder dim,
@@ -40,19 +44,25 @@ DRAFT EXIT_CRITERIA (pending confirmation):
 TASK GRAPH  ([R]=refactor/locally-testable  [V]=research-shaped, needs external verification)
 Status legend: TODO | DOING | DONE | PARKED
 
-Phase A — Ground truth & alignment (parallelizable; mostly research)
-  t010 [V] TODO  Verify current ComfyUI HTTP/WS API surface & message schema.
-  t011 [V] TODO  Verify LTX-2 19B node graph + text-encoder (Gemma 3 12B / 3840-dim vs T5).
-  t012 [V] TODO  Establish modern gen-AI video conditioning practice (img2vid vs depth-CN vs
-                 v2v vs first/last-frame) and per-frame Hydra -> clip-model mapping.
-  t013 [R] TODO  Reconcile docs (README/INDEX) with actual tree; produce delta list.
+Phase A — Ground truth & alignment (parallelizable; mostly research)  [COMPLETE]
+  t010 [V] DONE  ComfyUI HTTP/WS API verified -> beliefs c007-c009, state/tasks/t010/findings.md. Closes q001.
+  t011 [V] DONE  LTX-2 graph verified -> beliefs c010-c012, state/tasks/t011/findings.md. Closes q002.
+  t012 [V] DONE  Conditioning/output contract -> beliefs c013-c014, state/tasks/t012/findings.md.
+                 RECOMMENDATION (clip-native depth-video IC-LoRA v2v + clip cache) pending human decision (q003/q004).
+  t013 [R] DONE  Doc-vs-reality delta -> beliefs c005,c015. INDEX/README reference many nonexistent
+                 dirs/files (workflows/ python/ schema/ comfyui/ houdini/ scripts/, light.*, third_party/stb_image.h,
+                 pytest files). Resolved in t050 (doc fix).
 
 Phase B — Build & structural scaffolding (depends on A for naming only)
-  t020 [R] TODO  Fix plugin build graph: add comfyClient.cpp to sources; remove dead/dup CMake.
-  t021 [R] TODO  Add JSON library; replace substring response parsing.            (dep: decision)
-  t022 [R] TODO  Template-based workflow construction from versioned .json graphs. (dep: t021,t011)
-  t023 [R] TODO  Remove determinism-defeating cache-busters; un-hardcode paths/URLs.
-  t024 [R] TODO  Cross-platform networking layer (replace hand-rolled Winsock HTTP/WS).
+  t020 [R] DONE  Build graph fixed: comfyClient.cpp/.h added to sources; 3 dead if(FALSE) blocks removed.
+                 BLOCKED on compile by t025 (missing stb_image.h, belief c015).
+  t025 [R] TODO  Vendor the stb_image.h header comfyClient.cpp already #includes (belief c015). (dep: decision d007)
+  t021 [R] TODO  Add header-only JSON lib (d003); replace substring response parsing.
+  t022 [R] TODO  Template-based workflow construction from versioned .json graphs, using the
+                 corrected LTX-2 node names from t011.                            (dep: t021, t011, q007 version, q003 contract)
+  t023 [R] TODO  Remove determinism-defeating cache-busters; un-hardcode paths; fix WS default to :8188/ws (c007).
+  t024 [R] TODO  Cross-platform networking layer; add execution_success/progress_state handling (c008). (dep: networking-lib decision)
+  t050 [R] TODO  Reconcile README/INDEX with reality (t013 delta); remove fictional dirs/files/tests.
 
 Phase C — Wire the engine together (depends on B)
   t030 [R] TODO  Instantiate + feed ComfyUI client from delegate render settings.

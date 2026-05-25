@@ -14,6 +14,7 @@ set(HDCARWASH_SOURCES
     mesh.cpp
     camera.cpp
     rasterizer.cpp
+    comfyClient.cpp
 )
 
 set(HDCARWASH_HEADERS
@@ -27,51 +28,8 @@ set(HDCARWASH_HEADERS
     mesh.h
     camera.h
     rasterizer.h
+    comfyClient.h
 )
-
-# Phase 1+ sources (added incrementally)
-if(FALSE)  # Enable as phases complete
-    list(APPEND HDCARWASH_SOURCES
-        mesh.cpp
-        camera.cpp
-        instancer.cpp
-        rasterizer.cpp
-    )
-    list(APPEND HDCARWASH_HEADERS
-        mesh.h
-        camera.h
-        instancer.h
-        rasterizer.h
-    )
-endif()
-
-# Phase 2+ sources (ComfyUI integration)
-if(FALSE)
-    list(APPEND HDCARWASH_SOURCES
-        comfyuiClient.cpp
-        httpClient.cpp
-    )
-    list(APPEND HDCARWASH_HEADERS
-        comfyuiClient.h
-        httpClient.h
-    )
-endif()
-
-# Phase 3+ sources (Cognitive Engine)
-if(FALSE)
-    list(APPEND HDCARWASH_SOURCES
-        cognitiveEngine.cpp
-        substrateReader.cpp
-        substrateWriter.cpp
-        contextAssembler.cpp
-    )
-    list(APPEND HDCARWASH_HEADERS
-        cognitiveEngine.h
-        substrateReader.h
-        substrateWriter.h
-        contextAssembler.h
-    )
-endif()
 
 # ==============================================================================
 # Library Target
