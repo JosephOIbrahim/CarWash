@@ -40,8 +40,8 @@ CLAIM:          Determinism claims conflict with the code: every workflow builde
 CONFIDENCE:     0.85
 EVIDENCE:       t000-planner-survey (seed perturbation in _BuildWorkflow*, ms-based filenames; doc claims of reproducibility)
 SUPERSEDES:     none
-SUPERSEDED_BY:  none
-STATUS:         active
+SUPERSEDED_BY:  c016
+STATUS:         superseded
 CREATED:        2026-05-25
 UPDATED:        2026-05-25
 
@@ -72,8 +72,8 @@ CLAIM:          ComfyUI serves HTTP and WebSocket on the same default port 8188 
 CONFIDENCE:     0.95
 EVIDENCE:       t010 (ComfyUI master server.py:257-278; comfyClient.h:79, comfyClient.cpp:1960)
 SUPERSEDES:     none
-SUPERSEDED_BY:  none
-STATUS:         active
+SUPERSEDED_BY:  c017
+STATUS:         superseded
 CREATED:        2026-05-25
 UPDATED:        2026-05-25
 
@@ -157,6 +157,48 @@ CLAIM_ID:       c015
 CLAIM:          comfyClient.cpp (lines 22-27) #includes "stb_image.h" with STB_IMAGE_IMPLEMENTATION, but no stb_image.h exists anywhere in the repo and there is no third_party/ dir — so the file cannot compile until the header is vendored. This blocks EXIT criterion 6 (functional AI path) even though CMake configure itself succeeds.
 CONFIDENCE:     0.95
 EVIDENCE:       t020 (comfyClient.cpp:24-27; find -iname stb_image* returns nothing; INDEX.md:68 references a nonexistent third_party/stb_image.h)
+SUPERSEDES:     none
+SUPERSEDED_BY:  c018
+STATUS:         superseded
+CREATED:        2026-05-25
+UPDATED:        2026-05-25
+
+# --- structural-layer fixes (t021/t023/t025/t050), review-only (not compiled here) ---
+
+CLAIM_ID:       c016
+CLAIM:          The wall-clock seed perturbation (params.seed + ms%1000000) has been removed from all three workflow builders so the generation seed is now the fixed params.seed; determinism (seed) is consistent with the project's thesis. (Output filenames still carry a ms cache-buster, which does not affect generation determinism.)
+CONFIDENCE:     0.9
+EVIDENCE:       t023 (comfyClient.cpp seed lines now `params.seed`; d005)
+SUPERSEDES:     c004
+SUPERSEDED_BY:  none
+STATUS:         active
+CREATED:        2026-05-25
+UPDATED:        2026-05-25
+
+CLAIM_ID:       c017
+CLAIM:          The ComfyUI WebSocket default is corrected to ws://127.0.0.1:8188/ws (constructor default in comfyClient.h and the port fallback in _WebSocketConnect), so progress WS now targets the correct port instead of :9999.
+CONFIDENCE:     0.9
+EVIDENCE:       t023 (comfyClient.h ctor default; comfyClient.cpp _WebSocketConnect port=8188; c007)
+SUPERSEDES:     c007
+SUPERSEDED_BY:  none
+STATUS:         active
+CREATED:        2026-05-25
+UPDATED:        2026-05-25
+
+CLAIM_ID:       c018
+CLAIM:          stb_image.h (v2.30) and nlohmann/json (v3.11.3) are vendored into plugin/hdCarWash/third_party/ and that dir is on the include path; the previously-missing stb_image.h is resolved, so comfyClient.cpp's includes are satisfiable.
+CONFIDENCE:     0.85
+EVIDENCE:       t025/t021 (third_party/stb_image.h, third_party/json.hpp; CMakeLists include dir added). NOTE: not compiled here — verification is review-only.
+SUPERSEDES:     c015
+SUPERSEDED_BY:  none
+STATUS:         active
+CREATED:        2026-05-25
+UPDATED:        2026-05-25
+
+CLAIM_ID:       c019
+CLAIM:          The fragile substring JSON handling in _SubmitWorkflow, _WaitForCompletion (polling), _DownloadResult, and _ParseWebSocketMessage is replaced with nlohmann::json parsing; the WS parser now recognizes execution_success and the executing:null sentinel (per t010).
+CONFIDENCE:     0.8
+EVIDENCE:       t021 (comfyClient.cpp parse rewrites; c008). NOTE: review-only, not compiled here.
 SUPERSEDES:     none
 SUPERSEDED_BY:  none
 STATUS:         active

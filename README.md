@@ -102,11 +102,9 @@ Copy `build/plugin/hdCarWash/Release/hdCarWash.dll` to `plugin/lib/hdCarWash.dll
 
 ### 5. Download Models
 
-```powershell
-./download_models.ps1
-```
-
-Or manually place models in ComfyUI's `models/` directories.
+Manually place the LTX-2 and text-encoder models in ComfyUI's `models/` directories
+(`models/checkpoints`, `models/text_encoders`, `models/vae`). See the ComfyUI-LTXVideo
+documentation for the current canonical filenames.
 
 ---
 
@@ -187,19 +185,24 @@ hdCarWash uses **LTX-2 19B Distilled** with **Gemma 3 12B** for text encoding:
 └────────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** LTX-2 19B requires 3840-dimensional text embeddings. The older T5 XXL encoder (2048-dim) is incompatible. Gemma 3 12B provides the correct embedding dimensions.
+> **Note:** LTX-2 uses Gemma 3 12B for text encoding (not T5/T5-XXL).
+>
+> **Accuracy note (under revision):** the node names above (`UNETLoader` +
+> `transformer_only`, `LTXAVTextEncoderLoader`, `taeltx_2` as the final VAE) do **not** match
+> the current canonical ComfyUI-LTXVideo graph, which uses `CheckpointLoaderSimple`,
+> `LTXVGemmaCLIPModelLoader`, `LTXVImgToVideoInplace`/`ConditionOnly`, and tiled VAE decode
+> with `CreateVideo`/`SaveVideo`. The text-encoder *family* (Gemma 3 12B) is correct; the
+> loader node names and the exact embedding dimension are being corrected as the workflow is
+> modernized (see `state/tasks/t011/findings.md` and `state/plan.md`, task t022).
 
 ---
 
 ## Workflows
 
-Pre-configured ComfyUI workflows are included in `workflows/`:
-
-| Workflow | Description |
-|----------|-------------|
-| `carwash_ltx2_img2vid.json` | LTX-2 image-to-video with depth conditioning |
-| `hdcarwash_sdxl_depth.json` | SDXL with ControlNet depth |
-| `carwash_animatediff_workflow.json` | AnimateDiff video generation |
+> **Status:** The ComfyUI workflow graph is currently constructed in C++
+> (`comfyClient.cpp`). Migrating it to versioned, on-disk template `.json` files under a
+> `workflows/` directory is planned (see `state/plan.md`, task t022). No `workflows/`
+> directory ships yet.
 
 ---
 
@@ -248,11 +251,10 @@ set TF_DEBUG=HD_CARWASH
 
 ### Running Tests
 
-```bash
-cd tests
-python -m pytest test_determinism.py -v
-python -m pytest test_comfyui_nodes.py -v
-```
+A Houdini-side render smoke test lives at `test/test_carwash_render.py` (run from a Houdini
+21+ Python shell). A C++ unit-test target is scaffolded under `tests/cpp/` (CTest) and is
+being populated (see `state/plan.md`, tasks t040/t041). The previously documented
+`pytest` suites did not exist and have been removed from this section.
 
 ---
 

@@ -1,215 +1,117 @@
-# hdCarWash - Project Index
+# CarWash — Project Index
 
-Houdini Hydra render delegate for AI-powered video generation via ComfyUI/LTX2.
+Houdini USD/Hydra render delegate for AI-powered video generation via ComfyUI/LTX-2.
 
-**Repository:** https://github.com/JosephOIbrahim/hdCarWash (private)
+**Repository:** https://github.com/JosephOIbrahim/CarWash (private)
+
+> This index reflects the actual repository tree. Directories and files that earlier drafts
+> referenced but that do not exist (e.g. `workflows/`, `python/`, `schema/`, `comfyui/`,
+> `houdini/`, `scripts/`, pytest suites, `light.*`) have been removed. Planned-but-not-yet-built
+> items are called out as such and tracked in `state/plan.md`.
 
 ---
 
 ## Architecture Overview
 
 ```
-Houdini (USD/Hydra) → hdCarWash Delegate → ComfyUI (WebSocket) → LTX2/Gemma → Video Output
+Houdini (USD/Hydra) -> CarWash Delegate -> ComfyUI (HTTP + WebSocket :8188) -> LTX-2/Gemma -> Video
+```
+
+Current reality: the CPU rasterizer produces depth/normal AOVs; the ComfyUI client exists and is
+now in the build, but the full AOV -> ComfyUI -> video path is still being wired up
+(see `state/plan.md`, Phase C).
+
+---
+
+## Directory Structure (actual)
+
+```
+CarWash/
+├── CLAUDE.md                   # Orchestrator instructions
+├── CMakeLists.txt              # Top-level build
+├── DETERMINISM_CROSS_REFERENCE.md
+├── INDEX.md
+├── README.md
+├── rebuild_and_install.bat
+├── automation/                 # Python automation (synapse_*.py, carwash_automation.py)
+├── branding/
+├── docs/
+├── plugin/
+│   ├── hdCarWash/              # Hydra render delegate (C++)
+│   │   ├── api.h
+│   │   ├── tokens.{cpp,h}
+│   │   ├── debugCodes.{cpp,h}
+│   │   ├── rendererPlugin.{cpp,h}
+│   │   ├── renderDelegate.{cpp,h}
+│   │   ├── renderPass.{cpp,h}
+│   │   ├── renderBuffer.{cpp,h}
+│   │   ├── mesh.{cpp,h}
+│   │   ├── camera.{cpp,h}
+│   │   ├── rasterizer.{cpp,h}
+│   │   ├── comfyClient.{cpp,h} # ComfyUI HTTP/WebSocket client + workflow builder
+│   │   ├── third_party/        # Vendored single-headers: stb_image.h, json.hpp (nlohmann)
+│   │   └── CMakeLists.txt
+│   └── plugInfo.json           # Hydra plugin registration
+├── state/                      # Orchestrator state (plan, beliefs, decisions, tasks, ...)
+├── test/                       # Houdini-side: test_carwash_render.py, launch_carwash_test.bat
+└── tests/
+    └── cpp/                    # C++ unit-test target (CTest) — scaffold, being populated
 ```
 
 ---
 
-## Directory Structure
-
-```
-HdCarWash/
-├── plugin/                    # Hydra render delegate (C++)
-│   ├── hdCarWash/            # Main plugin source
-│   │   ├── comfyClient.*     # ComfyUI WebSocket client
-│   │   ├── renderDelegate.*  # Hydra delegate implementation
-│   │   ├── renderPass.*      # Render pass logic
-│   │   ├── rasterizer.*      # CPU rasterizer for depth/control images
-│   │   ├── camera.*          # Camera handling
-│   │   ├── mesh.*            # Mesh processing
-│   │   ├── light.*           # Light handling
-│   │   ├── renderBuffer.*    # AOV buffer management
-│   │   └── tokens.*          # USD tokens
-│   ├── lib/                  # Built DLL output
-│   └── plugInfo.json         # Hydra plugin registration
-├── workflows/                 # ComfyUI workflow definitions
-├── automation/               # Build & test automation
-├── python/                   # Python utilities
-├── schema/                   # USD schema definitions
-├── comfyui/                  # ComfyUI custom nodes
-├── houdini/                  # Houdini-side Python scripts
-├── tests/                    # Test suite
-└── scripts/                  # Utility scripts
-```
-
----
-
-## Core Components
-
-### Plugin (C++ Hydra Delegate)
+## Core Components (C++ Hydra Delegate)
 
 | File | Purpose |
 |------|---------|
-| `plugin/hdCarWash/comfyClient.cpp` | ComfyUI WebSocket client, LTX2 workflow builder |
-| `plugin/hdCarWash/comfyClient.h` | ComfyUI client header |
-| `plugin/hdCarWash/renderDelegate.cpp` | Main Hydra delegate implementation |
-| `plugin/hdCarWash/renderDelegate.h` | Delegate header with render settings |
-| `plugin/hdCarWash/renderPass.cpp` | Render pass execution logic |
-| `plugin/hdCarWash/renderPass.h` | Render pass header |
-| `plugin/hdCarWash/rasterizer.cpp` | CPU depth/normal rasterizer |
-| `plugin/hdCarWash/rasterizer.h` | Rasterizer header |
-| `plugin/hdCarWash/camera.cpp` | USD camera → matrices |
-| `plugin/hdCarWash/mesh.cpp` | USD mesh → triangles |
-| `plugin/hdCarWash/light.cpp` | USD light handling |
+| `plugin/hdCarWash/rendererPlugin.cpp` | Plugin registration (`HdCarWashRendererPlugin`) |
+| `plugin/hdCarWash/renderDelegate.cpp` | `HdRenderDelegate` implementation, prim factories, render settings |
+| `plugin/hdCarWash/renderPass.cpp` | Render execution; CPU rasterize path (full AI path WIP) |
+| `plugin/hdCarWash/rasterizer.cpp` | CPU depth/normal/id rasterizer + frame hash (determinism) |
+| `plugin/hdCarWash/comfyClient.cpp` | ComfyUI HTTP/WebSocket client, LTX-2 workflow builder |
+| `plugin/hdCarWash/mesh.cpp` | USD mesh -> triangles |
+| `plugin/hdCarWash/camera.cpp` | USD camera -> matrices |
 | `plugin/hdCarWash/renderBuffer.cpp` | AOV buffer management |
 | `plugin/hdCarWash/tokens.cpp` | USD token definitions |
-| `plugin/hdCarWash/debugCodes.cpp` | TF_DEBUG codes |
-| `plugin/hdCarWash/rendererPlugin.cpp` | Plugin registration |
+| `plugin/hdCarWash/debugCodes.cpp` | `TF_DEBUG` codes |
 | `plugin/hdCarWash/api.h` | Export macros |
-| `plugin/hdCarWash/third_party/stb_image.h` | Image I/O |
+| `plugin/hdCarWash/third_party/stb_image.h` | Vendored PNG decode (public domain, v2.30) |
+| `plugin/hdCarWash/third_party/json.hpp` | Vendored JSON parser (nlohmann/json v3.11.3) |
 | `plugin/plugInfo.json` | Hydra plugin manifest |
-| `plugin/hdCarWash/CMakeLists.txt` | Build configuration |
-
-### ComfyUI Workflows
-
-| File | Purpose |
-|------|---------|
-| `workflows/carwash_ltx2_img2vid.json` | LTX2 image-to-video workflow |
-| `workflows/hdcarwash_sdxl_depth.json` | SDXL depth-conditioned workflow |
-| `workflows/carwash_animatediff_workflow.json` | AnimateDiff workflow |
-| `workflows/carwash_video_workflow.json` | General video workflow |
-| `workflows/test_workflow_api.json` | API format test workflow |
-
-### USD Schemas
-
-| File | Purpose |
-|------|---------|
-| `schema/carWashSchema.usda` | CarWash render settings schema |
-| `schema/carWashRenderSettingsAPI.usda` | Render settings API schema |
-| `schema/cognitiveSubstrate.usda` | Cognitive substrate integration |
-| `schema/generatedSchema.usda` | Generated schema output |
-
-### Python Utilities
-
-| File | Purpose |
-|------|---------|
-| `python/carwash_video_bridge.py` | Video bridge utilities |
-| `python/carwash_color.py` | Color processing |
-| `python/carwash_production.py` | Production helpers |
-| `python/carwash_test_suite.py` | Test suite runner |
-| `houdini/synapse_server.py` | Synapse WebSocket server |
-
-### Automation Scripts
-
-| File | Purpose |
-|------|---------|
-| `automation/deploy_and_test.py` | Build, deploy, and test |
-| `automation/diagnose_carwash.py` | Diagnostic utilities |
-| `automation/check_comfyui_nodes.py` | Verify ComfyUI nodes |
-| `automation/quick_test.py` | Quick integration test |
-| `automation/quick_diagnostic.py` | Quick diagnostic |
-| `automation/synapse_*.py` | Synapse automation scripts |
-| `deploy_hdcarwash.py` | DLL deployment script |
-| `deploy.bat` | Windows deploy batch |
-| `setup_comfyui.bat` | ComfyUI setup |
-| `download_models.ps1` | Model download script |
-| `build_all_versions.py` | Multi-version build |
-
-### Tests
-
-| File | Purpose |
-|------|---------|
-| `tests/test_determinism.py` | Determinism verification |
-| `tests/test_comfyui_nodes.py` | ComfyUI node tests |
-| `tests/test_schema.py` | USD schema tests |
-| `test/test_carwash_render.py` | Render integration test |
 
 ---
 
-## Model Configuration (LTX2)
+## Model Configuration (LTX-2)
 
-```
-UNET:         LTX2/ltx-2-19b-distilled-fp8_transformer_only.safetensors
-Text Encoder: LTXAVTextEncoderLoader + gemma_3_12B_it_fp4_mixed.safetensors
-VAE:          LTX2/taeltx_2.safetensors
-```
-
-**Key insight:** LTX-2 19B requires 3840-dim embeddings. T5 XXL outputs 2048-dim (incompatible).
-Gemma 3 12B via `LTXAVTextEncoderLoader` provides correct 3840-dim embeddings.
-
----
-
-## Installation
-
-### Houdini Package
-
-Create `Documents/houdini21.0/packages/hdCarWash.json`:
-
-```json
-{
-    "env": [
-        {
-            "HOUDINI_PATH": {
-                "value": "C:/path/to/HdCarWash/plugin",
-                "method": "prepend"
-            }
-        },
-        {
-            "PXR_PLUGINPATH_NAME": {
-                "value": "C:/path/to/HdCarWash/plugin",
-                "method": "prepend"
-            }
-        }
-    ],
-    "path": "C:/path/to/HdCarWash/plugin"
-}
-```
-
-### DLL Locations
-
-The DLL may need to be deployed to multiple locations:
-- `plugin/lib/hdCarWash.dll` (package path)
-- `Documents/houdini21.0/dso/hdCarWash.dll` (user DSO)
-- `houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` (USD plugin path)
+CarWash targets the LTX-2 family with Gemma 3 12B text encoding. The exact ComfyUI node graph
+is being modernized to match the current canonical Lightricks/ComfyUI-LTXVideo workflows
+(`CheckpointLoaderSimple`, `LTXVGemmaCLIPModelLoader`, `LTXVImgToVideoInplace`/`ConditionOnly`,
+tiled VAE decode, `CreateVideo`/`SaveVideo`). See `state/tasks/t011/findings.md` for the verified
+node mapping and `state/tasks/t012/findings.md` for the depth-video conditioning contract.
 
 ---
 
 ## Build
 
 ```bash
-cd HdCarWash
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
+cmake -B build -S . -G "Visual Studio 17 2022" -A x64 \
+  -DCMAKE_PREFIX_PATH="C:/Program Files/Side Effects Software/Houdini 21.x"
+cmake --build build --config Release
 ```
 
 ---
 
 ## Usage
 
-1. Start ComfyUI (port 8188)
-2. Launch Houdini 21.0
-3. Create LOP network with geometry
-4. Add Render Settings node, select "CarWash" renderer
-5. Render - output appears in ComfyUI output folder
+1. Start ComfyUI (HTTP + WebSocket on port 8188).
+2. Launch Houdini 21+, create a LOP network with geometry.
+3. Add a Render Settings node, select the "CarWash" renderer.
+4. Render — depth/normal AOVs are produced; the AI video path is being wired up.
 
 ---
 
-## Commit History
+## Orchestrator State
 
-| Hash | Description |
-|------|-------------|
-| `f2f8c1f` | Fix LTX2 text encoder: use LTXAVTextEncoderLoader with Gemma 3 12B |
-| `b03021f` | Phase 1 complete: CPU rasterizer with determinism verification |
-
----
-
-## Related Files (External)
-
-| Path | Purpose |
-|------|---------|
-| `C:\ComfyUI\user\default\workflows\carwash_ltx2_gemma.json` | Bookmarked working workflow |
-| `C:\Temp\ltx2_av_loader.json` | Test workflow (API format) |
-
----
-
-*Generated: 2026-02-02*
+This repo is managed under the Orchestrator workflow in `CLAUDE.md`. Durable state lives in
+`state/` — `plan.md` (task graph + EXIT_CRITERIA), `beliefs.md`, `decisions.md`,
+`open_questions.md`, `parked.md`, and per-task artifacts under `state/tasks/`.

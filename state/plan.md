@@ -55,19 +55,21 @@ Phase A — Ground truth & alignment (parallelizable; mostly research)  [COMPLET
 
 Phase B — Build & structural scaffolding (depends on A for naming only)
   t020 [R] DONE  Build graph fixed: comfyClient.cpp/.h added to sources; 3 dead if(FALSE) blocks removed.
-                 BLOCKED on compile by t025 (missing stb_image.h, belief c015).
-  t025 [R] TODO  Vendor the stb_image.h header comfyClient.cpp already #includes (belief c015). (dep: decision d007)
-  t021 [R] TODO  Add header-only JSON lib (d003); replace substring response parsing.
-  t022 [R] TODO  Template-based workflow construction from versioned .json graphs, using the
-                 corrected LTX-2 node names from t011.                            (dep: t021, t011, q007 version, q003 contract)
-  t023 [R] TODO  Remove determinism-defeating cache-busters; un-hardcode paths; fix WS default to :8188/ws (c007).
-  t024 [R] TODO  Cross-platform networking layer; add execution_success/progress_state handling (c008). (dep: networking-lib decision)
-  t050 [R] TODO  Reconcile README/INDEX with reality (t013 delta); remove fictional dirs/files/tests.
+  t025 [R] DONE  Vendored stb_image.h v2.30 + nlohmann/json v3.11.3 to third_party/; include dir added (c018).
+  t021 [R] DONE  nlohmann::json parsing in _SubmitWorkflow/_WaitForCompletion/_DownloadResult/_ParseWebSocketMessage;
+                 WS parser now handles execution_success + executing:null (c019). REVIEW-ONLY (not compiled here).
+  t023 [R] DONE(partial)  Seed perturbation removed -> deterministic seed (c016); WS default fixed to :8188/ws (c017).
+                 Residual: gate remaining C:/Temp debug logging (parked p004); C:/ComfyUI/input default (parked p005).
+  t050 [R] DONE  README + INDEX corrected: removed nonexistent dirs/files/pytest suites/download_models.ps1;
+                 added accuracy notes on LTX node names + workflow/test status (c005).
+  t022 [R] TODO  [PAUSED] Template-based workflow construction from versioned .json graphs, using corrected
+                 LTX-2 node names (t011), template-agnostic loader w/ 2.0 19B default (d008).  (dep: q009)
+  t024 [R] TODO  [PAUSED] Cross-platform networking layer; progress_state handling. (dep: networking-lib decision)
 
-Phase C — Wire the engine together (depends on B)
-  t030 [R] TODO  Instantiate + feed ComfyUI client from delegate render settings.
+Phase C — Wire the engine together (depends on B)  [PAUSED — resume after review]
+  t030 [R] TODO  Instantiate + feed ComfyUI client from delegate render settings (+ C:/ComfyUI/input from settings, p005).
   t031 [R] TODO  Implement _ExecuteFullPipeline (AOVs -> client -> color AOV; graceful fallback).
-  t032 [V/R] TODO Resolve & implement per-frame vs per-clip output contract.        (dep: t012)
+  t032 [R] TODO  Implement clip-native depth-video v2v + clip cache keyed by (range,scene,seed) (d009 confirmed). (dep: t022, q009)
 
 Phase D — Verification scaffolding (depends on B)
   t040 [R] TODO  C++ unit tests in tests/cpp/ (JSON parse, template mutation, codec, frame hash).

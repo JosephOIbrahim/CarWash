@@ -26,6 +26,9 @@
 #define STBI_NO_STDIO           // We load from memory, not files
 #include "stb_image.h"
 
+// nlohmann/json (header-only) for parsing ComfyUI responses.
+#include "json.hpp"
+
 // Windows HTTP and filesystem
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -824,7 +827,7 @@ HdCarWashComfyClient::_BuildWorkflow(
     json << "        \"positive\": [\"2\", 0],\n";
     json << "        \"negative\": [\"3\", 0],\n";
     json << "        \"latent_image\": [\"4\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";  // Vary seed to prevent caching
+    json << "        \"seed\": " << params.seed << ",\n";  // Deterministic: fixed seed for reproducible output
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -1121,7 +1124,7 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     json << "        \"positive\": [\"" << finalPositive << "\", 0],\n";
     json << "        \"negative\": [\"" << finalNegative << "\", 1],\n";
     json << "        \"latent_image\": [\"" << latentNode << "\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";
+    json << "        \"seed\": " << params.seed << ",\n";  // Deterministic: fixed seed
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -1351,7 +1354,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"RandomNoise\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"noise_seed\": " << (params.seed + ms % 1000000) << "\n";
+    json << "        \"noise_seed\": " << params.seed << "\n";  // Deterministic: fixed seed
     json << "      }\n";
     json << "    },\n";
     int noiseNode = nodeId++;
@@ -1400,53 +1403,25 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
 std::string
 HdCarWashComfyClient::_SubmitWorkflow(const std::string& workflowJson)
 {
-    // DEBUG: Log workflow submission
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
-    debugLog << "[_SubmitWorkflow] Workflow JSON size: " << workflowJson.size() << " bytes" << std::endl;
-    if (workflowJson.size() < 2000) {
-        debugLog << "[_SubmitWorkflow] Workflow: " << workflowJson << std::endl;
-    } else {
-        debugLog << "[_SubmitWorkflow] Workflow (first 1000): " << workflowJson.substr(0, 1000) << std::endl;
-    }
-
     std::string response = _HttpPost("/prompt", workflowJson);
 
-    debugLog << "[_SubmitWorkflow] Response size: " << response.size() << " bytes" << std::endl;
-    if (response.size() < 500) {
-        debugLog << "[_SubmitWorkflow] Response: " << response << std::endl;
-    } else {
-        debugLog << "[_SubmitWorkflow] Response (first 500): " << response.substr(0, 500) << std::endl;
+    // Success: {"prompt_id": "...", "number": N, "node_errors": {}}
+    // Validation failure: HTTP 400 {"error": ..., "node_errors": {...}}
+    try {
+        nlohmann::json j = nlohmann::json::parse(response);
+        if (j.contains("prompt_id") && j["prompt_id"].is_string()) {
+            return j["prompt_id"].get<std::string>();
+        }
+        if (j.contains("error")) {
+            TF_WARN("ComfyUI rejected prompt: %s", j.dump().c_str());
+            return "";
+        }
+    } catch (const std::exception& e) {
+        TF_WARN("Failed to parse ComfyUI /prompt response: %s", e.what());
     }
 
-    // Parse prompt_id from response
-    // Response format: {"prompt_id": "xxx-xxx-xxx"}
-    size_t pos = response.find("\"prompt_id\"");
-    if (pos == std::string::npos) {
-        debugLog << "[_SubmitWorkflow] ERROR: No prompt_id in response" << std::endl;
-        debugLog.close();
-        TF_WARN("No prompt_id in ComfyUI response");
-        return "";
-    }
-
-    pos = response.find("\"", pos + 12);  // Find opening quote of value
-    if (pos == std::string::npos) {
-        debugLog << "[_SubmitWorkflow] ERROR: Malformed prompt_id" << std::endl;
-        debugLog.close();
-        return "";
-    }
-
-    size_t endPos = response.find("\"", pos + 1);
-    if (endPos == std::string::npos) {
-        debugLog << "[_SubmitWorkflow] ERROR: Malformed prompt_id end" << std::endl;
-        debugLog.close();
-        return "";
-    }
-
-    std::string promptId = response.substr(pos + 1, endPos - pos - 1);
-    debugLog << "[_SubmitWorkflow] SUCCESS: prompt_id=" << promptId << std::endl;
-    debugLog.close();
-
-    return promptId;
+    TF_WARN("No prompt_id in ComfyUI response");
+    return "";
 }
 
 bool
@@ -1474,28 +1449,29 @@ HdCarWashComfyClient::_WaitForCompletion(const std::string& promptId, float time
             return false;
         }
 
-        // Poll history endpoint
+        // Poll history endpoint. While running, /history/{id} is {} (or lacks the id);
+        // on completion it is { "<id>": { "outputs": {...}, "status": {"status_str": ...} } }.
         std::string response = _HttpGet("/history/" + promptId);
-
-        // Check for completion - ComfyUI returns:
-        // - "outputs": {...} when complete
-        // - "status_str": "success" in status object
-        // We check for "outputs" with actual content (non-empty outputs section)
-        bool hasOutputs = response.find("\"outputs\"") != std::string::npos &&
-                         response.find("\"outputs\": {}") == std::string::npos;
-        bool hasSuccess = response.find("\"status_str\": \"success\"") != std::string::npos ||
-                         response.find("\"status_str\":\"success\"") != std::string::npos;
-
-        if (hasOutputs || hasSuccess) {
-            TF_DEBUG_MSG(HD_CARWASH, "WaitForCompletion: success after %.1fs\n", elapsed);
-            return true;
-        }
-
-        // Check for error status
-        if (response.find("\"status_str\": \"error\"") != std::string::npos ||
-            response.find("\"status_str\":\"error\"") != std::string::npos) {
-            TF_WARN("ComfyUI workflow error detected");
-            return false;
+        try {
+            nlohmann::json j = nlohmann::json::parse(response);
+            if (j.contains(promptId)) {
+                const auto& entry = j[promptId];
+                std::string statusStr;
+                if (entry.contains("status") && entry["status"].contains("status_str")) {
+                    statusStr = entry["status"]["status_str"].get<std::string>();
+                }
+                if (statusStr == "error") {
+                    TF_WARN("ComfyUI workflow error detected");
+                    return false;
+                }
+                bool hasOutputs = entry.contains("outputs") && !entry["outputs"].empty();
+                if (hasOutputs || statusStr == "success") {
+                    TF_DEBUG_MSG(HD_CARWASH, "WaitForCompletion: success after %.1fs\n", elapsed);
+                    return true;
+                }
+            }
+        } catch (const std::exception&) {
+            // Empty/partial history while still running — keep polling.
         }
 
         // Wait before polling again
@@ -1510,102 +1486,55 @@ HdCarWashComfyClient::_DownloadResult(
     const std::string& promptId,
     unsigned int& width, unsigned int& height)
 {
-    // DEBUG: Write to file for diagnosis
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
-    debugLog << "[_DownloadResult] promptId: " << promptId << std::endl;
-
-    // Get output info from history
+    // Get output info from history.
     std::string history = _HttpGet("/history/" + promptId);
-
-    debugLog << "[_DownloadResult] History response length: " << history.size() << std::endl;
-    if (history.size() < 500) {
-        debugLog << "[_DownloadResult] History content: " << history << std::endl;
-    } else {
-        debugLog << "[_DownloadResult] History (first 500): " << history.substr(0, 500) << std::endl;
-    }
-
     TF_DEBUG_MSG(HD_CARWASH, "History response length: %zu\n", history.size());
 
-    // Parse filename from history JSON
-    // Looking for: "outputs": {..., "images": [{"filename": "xxx.png", "subfolder": "hdcarwash", ...}]}
-    // IMPORTANT: Must search within "outputs" section to avoid matching "filename_prefix" in prompt inputs
-
-    // First find the "outputs" section
-    size_t outputsPos = history.find("\"outputs\"");
-    if (outputsPos == std::string::npos) {
-        debugLog << "[_DownloadResult] ERROR: No outputs section in history response" << std::endl;
-        debugLog.close();
-        TF_WARN("No outputs section in history response");
-        return {};
-    }
-
-    debugLog << "[_DownloadResult] Found outputs section at position: " << outputsPos << std::endl;
-
-    // Now search for "filename" AFTER the outputs section
-    size_t pos = history.find("\"filename\"", outputsPos);
-    if (pos == std::string::npos) {
-        debugLog << "[_DownloadResult] ERROR: No filename in outputs section" << std::endl;
-        // Log a snippet around outputs for debugging
-        size_t snippetStart = outputsPos;
-        size_t snippetLen = std::min((size_t)500, history.size() - snippetStart);
-        debugLog << "[_DownloadResult] Outputs snippet: " << history.substr(snippetStart, snippetLen) << std::endl;
-        debugLog.close();
-        TF_WARN("No filename in outputs section");
-        return {};
-    }
-
-    pos = history.find("\"", pos + 11);
-    if (pos == std::string::npos) return {};
-
-    size_t endPos = history.find("\"", pos + 1);
-    if (endPos == std::string::npos) return {};
-
-    std::string filename = history.substr(pos + 1, endPos - pos - 1);
-
-    debugLog << "[_DownloadResult] Found filename: " << filename << std::endl;
-
-    // Also try to get subfolder
-    std::string subfolder = "";
-    size_t subPos = history.find("\"subfolder\"");
-    if (subPos != std::string::npos) {
-        subPos = history.find("\"", subPos + 12);
-        if (subPos != std::string::npos) {
-            size_t subEnd = history.find("\"", subPos + 1);
-            if (subEnd != std::string::npos) {
-                subfolder = history.substr(subPos + 1, subEnd - subPos - 1);
+    // history = { "<id>": { "outputs": { "<node_id>": { "images":
+    //   [{"filename","subfolder","type"}] } } } }. Parsing with a real JSON
+    // parser avoids matching "filename_prefix" in the prompt inputs.
+    std::string filename, subfolder, type = "output";
+    try {
+        nlohmann::json j = nlohmann::json::parse(history);
+        if (j.contains(promptId) && j[promptId].contains("outputs")) {
+            for (const auto& node : j[promptId]["outputs"].items()) {
+                const auto& out = node.value();
+                if (out.contains("images") && out["images"].is_array() &&
+                    !out["images"].empty()) {
+                    const auto& img = out["images"][0];
+                    filename = img.value("filename", "");
+                    subfolder = img.value("subfolder", "");
+                    type = img.value("type", "output");
+                    break;
+                }
             }
         }
+    } catch (const std::exception& e) {
+        TF_WARN("Failed to parse ComfyUI history: %s", e.what());
+        return {};
     }
 
-    TF_DEBUG_MSG(HD_CARWASH, "Output file: %s/%s\n",
-                 subfolder.c_str(), filename.c_str());
+    if (filename.empty()) {
+        TF_WARN("No output image in ComfyUI history for prompt %s", promptId.c_str());
+        return {};
+    }
+
+    TF_DEBUG_MSG(HD_CARWASH, "Output file: %s/%s\n", subfolder.c_str(), filename.c_str());
 
     // Build view URL
     std::string viewUrl = "/view?filename=" + filename;
     if (!subfolder.empty()) {
         viewUrl += "&subfolder=" + subfolder;
     }
-
-    debugLog << "[_DownloadResult] Downloading from: " << viewUrl << std::endl;
+    viewUrl += "&type=" + type;
 
     // Download raw PNG bytes
     std::string pngData = _HttpGet(viewUrl);
 
-    debugLog << "[_DownloadResult] Downloaded PNG size: " << pngData.size() << " bytes" << std::endl;
-
     if (pngData.size() < 24) {
-        debugLog << "[_DownloadResult] ERROR: Image too small" << std::endl;
-        debugLog.close();
         TF_WARN("Downloaded image too small: %zu bytes", pngData.size());
         return {};
     }
-
-    // Log first few bytes to verify PNG signature
-    debugLog << "[_DownloadResult] First 8 bytes (hex): ";
-    for (size_t i = 0; i < std::min(pngData.size(), (size_t)8); i++) {
-        debugLog << std::hex << (int)(unsigned char)pngData[i] << " ";
-    }
-    debugLog << std::dec << std::endl;
 
     TF_DEBUG_MSG(HD_CARWASH, "Downloaded PNG: %zu bytes\n", pngData.size());
 
@@ -1622,9 +1551,7 @@ HdCarWashComfyClient::_DownloadResult(
 
     if (!pixels) {
         const char* reason = stbi_failure_reason();
-        debugLog << "[_DownloadResult] ERROR: stb_image failed: " << (reason ? reason : "unknown") << std::endl;
-        debugLog.close();
-        TF_WARN("stb_image failed to decode PNG: %s", reason);
+        TF_WARN("stb_image failed to decode PNG: %s", reason ? reason : "unknown");
         width = 0;
         height = 0;
         return {};
@@ -1662,9 +1589,6 @@ HdCarWashComfyClient::_DownloadResult(
 
     // Free stb_image allocated memory
     stbi_image_free(pixels);
-
-    debugLog << "[_DownloadResult] SUCCESS: Decoded " << totalPixels << " pixels (" << width << "x" << height << ")" << std::endl;
-    debugLog.close();
 
     TF_DEBUG_MSG(HD_CARWASH, "Successfully decoded %zu pixels from ComfyUI\n", totalPixels);
 
@@ -1957,7 +1881,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     // Parse WebSocket URL: ws://host:port/path
     std::string url = _wsUrl;
     std::string host;
-    int port = 9999;
+    int port = 8188;  // ComfyUI serves the WebSocket on the same port as HTTP.
     std::string path = "/ws";
 
     // Remove ws:// prefix
@@ -2312,45 +2236,35 @@ HdCarWashComfyClient::_WaitForCompletionWebSocket(const std::string& promptId, f
 bool
 HdCarWashComfyClient::_ParseWebSocketMessage(const std::string& message, const std::string& promptId)
 {
-    // ComfyUI WebSocket messages:
-    // {"type": "status", "data": {"status": {"exec_info": {"queue_remaining": N}}}}
-    // {"type": "executing", "data": {"node": "N", "prompt_id": "xxx"}}
-    // {"type": "executed", "data": {"node": "N", "output": {...}, "prompt_id": "xxx"}}
-    // {"type": "execution_cached", "data": {"nodes": [...], "prompt_id": "xxx"}}
+    // Current ComfyUI text frames are {"type": <name>, "data": {...}}.
+    // Completion signals, in order of authority:
+    //   execution_success {prompt_id}                       <- whole-prompt done (newer servers)
+    //   executing {node: null, prompt_id}                   <- canonical end sentinel
+    //   execution_cached {nodes, prompt_id}                 <- satisfied from cache
+    //   executed {output:{images:[...]}, prompt_id}         <- a UI-output node (e.g. SaveImage)
+    // Binary preview frames are not JSON and parse-throw here (ignored).
+    try {
+        nlohmann::json j = nlohmann::json::parse(message);
+        const std::string type = j.value("type", "");
+        const nlohmann::json data =
+            j.contains("data") ? j["data"] : nlohmann::json::object();
 
-    // Check if this message is for our prompt
-    if (message.find(promptId) == std::string::npos &&
-        message.find("\"type\": \"status\"") == std::string::npos &&
-        message.find("\"type\":\"status\"") == std::string::npos) {
-        return false;  // Not relevant to us
-    }
+        if (data.value("prompt_id", "") != promptId) {
+            return false;  // Not our prompt.
+        }
 
-    // Check for execution_cached (workflow completed from cache)
-    if (message.find("\"type\": \"execution_cached\"") != std::string::npos ||
-        message.find("\"type\":\"execution_cached\"") != std::string::npos) {
-        return true;
-    }
-
-    // Check for executed (final node completed)
-    // The SaveImage node is typically the last one
-    if ((message.find("\"type\": \"executed\"") != std::string::npos ||
-         message.find("\"type\":\"executed\"") != std::string::npos) &&
-        message.find("SaveImage") != std::string::npos) {
-        return true;
-    }
-
-    // Check for queue empty (all work done)
-    if (message.find("\"queue_remaining\": 0") != std::string::npos ||
-        message.find("\"queue_remaining\":0") != std::string::npos) {
-        // Queue is empty, but verify our prompt was in it
-        // This is a fallback check
-        return false;  // Don't complete just on queue empty, wait for executed
-    }
-
-    // Check for "executing": null (nothing being executed = done)
-    if (message.find("\"executing\"") != std::string::npos &&
-        message.find("\"node\": null") != std::string::npos) {
-        return true;
+        if (type == "execution_success" || type == "execution_cached") {
+            return true;
+        }
+        if (type == "executing" && data.contains("node") && data["node"].is_null()) {
+            return true;
+        }
+        if (type == "executed" && data.contains("output") &&
+            data["output"].contains("images")) {
+            return true;
+        }
+    } catch (const std::exception&) {
+        // Non-JSON (binary preview) or malformed frame: ignore.
     }
 
     return false;

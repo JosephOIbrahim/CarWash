@@ -71,12 +71,13 @@ class HDCARWASH_API HdCarWashComfyClient
 {
 public:
     /// Construct client with server URL
-    /// Construct client with server URL
     /// @param serverUrl ComfyUI HTTP server URL (default: http://127.0.0.1:8188)
-    /// @param wsUrl WebSocket URL for progress updates (default: ws://localhost:9999)
+    /// @param wsUrl WebSocket URL for progress updates (default: ws://127.0.0.1:8188/ws).
+    ///   ComfyUI serves HTTP and the WebSocket on the same port (8188); there is no
+    ///   separate WS port.
     explicit HdCarWashComfyClient(
         const std::string& serverUrl = "http://127.0.0.1:8188",
-        const std::string& wsUrl = "ws://localhost:9999");
+        const std::string& wsUrl = "ws://127.0.0.1:8188/ws");
 
     ~HdCarWashComfyClient();
 
