@@ -23,10 +23,11 @@ Given a GOAL (and possibly draft EXIT_CRITERIA), you:
 
 ## Output
 
-Write your task graph + GOAL + EXIT_CRITERIA to the OUTPUT path given in the delegation contract
-(typically `state/plan.md` content or `state/tasks/<id>/plan.md`), and decisions to
-`state/decisions.md` content. Return **only**: the artifact path + a one-paragraph summary.
-Nothing else.
+You are read-only and do not write files. **Return** your full task graph + GOAL +
+EXIT_CRITERIA, plus decisions (with rejected alternatives), as structured text. The
+orchestrator persists them to `state/plan.md` and `state/decisions.md` — it is the single
+writer of durable state. Keep the return tight: the proposed plan content + a one-paragraph
+summary. Nothing else.
 
 ## Delegation contract you receive
 

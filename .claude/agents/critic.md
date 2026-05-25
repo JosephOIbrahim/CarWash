@@ -32,8 +32,11 @@ Routes to: `beliefs.md` (the **orchestrator** writes; you only propose) and `ope
 
 ## Output
 
-Write your findings to the OUTPUT path (`state/tasks/<id>/<artifact>`). Return **only**: the
-artifact path + a one-paragraph summary in the shape your MODE requires. Nothing else.
+You are read-only and do not write files. **Return** your findings as structured text in the
+shape your MODE requires (verify: pass/fail + specifics; red_team: classified findings;
+evaluate: claims + confidence + provenance). The orchestrator persists them to
+`state/tasks/<id>/<artifact>`, `beliefs.md`, or `open_questions.md` as appropriate — it is the
+single writer of durable state. Return the findings + a one-paragraph summary. Nothing else.
 
 ## Delegation contract you receive
 
