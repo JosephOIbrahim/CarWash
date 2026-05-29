@@ -176,6 +176,10 @@ HdCarWashRenderPass::_ExecutePhase1(
         HdCarWashSettingsTokens->enableDepthControl, _styleParams.useDepthControl);
     _styleParams.useNormalControl = GetSetting<bool>(settings,
         HdCarWashSettingsTokens->enableNormalControl, _styleParams.useNormalControl);
+    // #3b: when deterministicMode is on, ProcessFrame uses the fixed seed (no
+    // time-jitter), so the same scene+seed reproduces the same AI render.
+    _styleParams.deterministic = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->deterministicMode, _styleParams.deterministic);
 
     // Render mode settings
     _enableAI = GetSetting<bool>(settings,
