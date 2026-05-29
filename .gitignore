@@ -21,3 +21,7 @@ __pycache__/
 # Test outputs
 test/render/
 C:/Temp/hdcarwash_debug.txt
+
+# Transient agent/build state
+.ralph-state.json
+*.log

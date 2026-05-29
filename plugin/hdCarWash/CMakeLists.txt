@@ -14,6 +14,8 @@ set(HDCARWASH_SOURCES
     mesh.cpp
     camera.cpp
     rasterizer.cpp
+    light.cpp
+    comfyClient.cpp
 )
 
 set(HDCARWASH_HEADERS
@@ -27,6 +29,8 @@ set(HDCARWASH_HEADERS
     mesh.h
     camera.h
     rasterizer.h
+    light.h
+    comfyClient.h
 )
 
 # Phase 1+ sources (added incrementally)
@@ -88,7 +92,15 @@ target_include_directories(hdCarWash
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party  # stb_image.h
 )
+
+# Suppress warnings from third-party stb_image.h on MSVC
+if(MSVC)
+    set_source_files_properties(comfyClient.cpp
+        PROPERTIES COMPILE_FLAGS "/wd4244 /wd4456 /wd4100"
+    )
+endif()
 
 # ==============================================================================
 # Link USD/Hydra Libraries (via Houdini targets)
@@ -102,6 +114,8 @@ target_link_libraries(hdCarWash
     PUBLIC
         Houdini
         HoudiniThirdParty
+    PRIVATE
+        $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 
 # ==============================================================================

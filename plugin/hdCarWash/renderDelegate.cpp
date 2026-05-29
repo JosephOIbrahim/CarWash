@@ -9,6 +9,7 @@
 #include "renderBuffer.h"
 #include "mesh.h"
 #include "camera.h"
+#include "light.h"
 #include "debugCodes.h"
 
 #include "pxr/imaging/hd/extComputation.h"
@@ -33,7 +34,15 @@ const TfTokenVector HdCarWashRenderDelegate::_supportedRprimTypes = {
 const TfTokenVector HdCarWashRenderDelegate::_supportedSprimTypes = {
     HdPrimTypeTokens->camera,
     HdPrimTypeTokens->extComputation,
-    // TODO Phase 1: Add lights, materials
+    // Light types
+    HdPrimTypeTokens->simpleLight,
+    HdPrimTypeTokens->sphereLight,
+    HdPrimTypeTokens->rectLight,
+    HdPrimTypeTokens->distantLight,
+    HdPrimTypeTokens->domeLight,
+    HdPrimTypeTokens->diskLight,
+    HdPrimTypeTokens->cylinderLight,
+    // TODO: Add materials
 };
 
 // Supported Bprim types (buffers)
@@ -243,6 +252,44 @@ HdCarWashRenderDelegate::GetRenderSettingDescriptors() const
         VtValue(42)
     });
 
+    // Prompt settings
+    settings.push_back({
+        "Prompt",
+        HdCarWashSettingsTokens->prompt,
+        VtValue(std::string("photorealistic 3D render, cinematic lighting, sharp details"))
+    });
+
+    settings.push_back({
+        "Negative Prompt",
+        HdCarWashSettingsTokens->negativePrompt,
+        VtValue(std::string("blurry, low quality, distorted"))
+    });
+
+    // ControlNet settings
+    settings.push_back({
+        "Depth ControlNet Strength",
+        HdCarWashSettingsTokens->depthControlNetStrength,
+        VtValue(0.8f)
+    });
+
+    settings.push_back({
+        "Normal ControlNet Strength",
+        HdCarWashSettingsTokens->normalControlNetStrength,
+        VtValue(0.6f)
+    });
+
+    settings.push_back({
+        "Enable Depth ControlNet",
+        HdCarWashSettingsTokens->enableDepthControl,
+        VtValue(true)
+    });
+
+    settings.push_back({
+        "Enable Normal ControlNet",
+        HdCarWashSettingsTokens->enableNormalControl,
+        VtValue(true)
+    });
+
     return settings;
 }
 
@@ -323,6 +370,19 @@ HdCarWashRenderDelegate::CreateSprim(
         return new HdExtComputation(sprimId);
     }
 
+    // Light types
+    if (typeId == HdPrimTypeTokens->simpleLight ||
+        typeId == HdPrimTypeTokens->sphereLight ||
+        typeId == HdPrimTypeTokens->rectLight ||
+        typeId == HdPrimTypeTokens->distantLight ||
+        typeId == HdPrimTypeTokens->domeLight ||
+        typeId == HdPrimTypeTokens->diskLight ||
+        typeId == HdPrimTypeTokens->cylinderLight) {
+        TF_DEBUG_MSG(HD_CARWASH, "CreateSprim: light %s (type: %s)\n",
+                     sprimId.GetText(), typeId.GetText());
+        return new HdCarWashLight(sprimId, typeId);
+    }
+
     TF_CODING_ERROR("Unknown sprim type: %s", typeId.GetText());
     return nullptr;
 }
@@ -335,6 +395,17 @@ HdCarWashRenderDelegate::CreateFallbackSprim(TfToken const& typeId)
     }
     if (typeId == HdPrimTypeTokens->extComputation) {
         return new HdExtComputation(SdfPath::EmptyPath());
+    }
+
+    // Fallback lights
+    if (typeId == HdPrimTypeTokens->simpleLight ||
+        typeId == HdPrimTypeTokens->sphereLight ||
+        typeId == HdPrimTypeTokens->rectLight ||
+        typeId == HdPrimTypeTokens->distantLight ||
+        typeId == HdPrimTypeTokens->domeLight ||
+        typeId == HdPrimTypeTokens->diskLight ||
+        typeId == HdPrimTypeTokens->cylinderLight) {
+        return new HdCarWashLight(SdfPath::EmptyPath(), typeId);
     }
 
     TF_CODING_ERROR("Unknown fallback sprim type: %s", typeId.GetText());
@@ -425,6 +496,13 @@ HdCarWashRenderDelegate::GetSupportedBprimTypes() const
 // ==============================================================================
 // CarWash-Specific Methods
 // ==============================================================================
+
+HdRenderSettingsMap const&
+HdCarWashRenderDelegate::GetRenderSettingsMap() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _settingsMap;
+}
 
 TfToken
 HdCarWashRenderDelegate::GetActiveBackend() const

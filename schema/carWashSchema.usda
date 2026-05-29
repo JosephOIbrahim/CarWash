@@ -1,0 +1,11 @@
+#usda 1.0
+(
+    doc = "CarWash Renderer Schema - Placeholder"
+    subLayers = []
+)
+
+def "CarWashSchema" (
+    doc = "Schema for CarWash renderer settings"
+)
+{
+}

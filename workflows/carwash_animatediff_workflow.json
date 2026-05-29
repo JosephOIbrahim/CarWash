@@ -1,0 +1,281 @@
+{
+  "last_node_id": 45,
+  "last_link_id": 60,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [50, 50],
+      "size": [315, 98],
+      "title": "Base SD Model",
+      "widgets_values": ["realisticVisionV51_v51VAE.safetensors"]
+    },
+    {
+      "id": 2,
+      "type": "ADE_LoadAnimateDiffModel",
+      "pos": [50, 200],
+      "size": [315, 58],
+      "title": "AnimateDiff Motion Model",
+      "widgets_values": ["mm_sd_v15_v2.ckpt"]
+    },
+    {
+      "id": 3,
+      "type": "ADE_ApplyAnimateDiffModel",
+      "pos": [400, 100],
+      "size": [315, 130],
+      "title": "Apply AnimateDiff",
+      "widgets_values": [1.0, 0.0, 1.0]
+    },
+    {
+      "id": 4,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 350],
+      "size": [315, 200],
+      "title": "Load Depth Video (from Houdini)",
+      "widgets_values": ["depth_sequence.mp4", 0, 0, 24, "Disabled", true, true]
+    },
+    {
+      "id": 5,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 600],
+      "size": [315, 200],
+      "title": "Load Normal Video (from Houdini)",
+      "widgets_values": ["normal_sequence.mp4", 0, 0, 24, "Disabled", true, true]
+    },
+    {
+      "id": 6,
+      "type": "ControlNetLoaderAdvanced",
+      "pos": [400, 350],
+      "size": [315, 78],
+      "title": "ControlNet Depth (Temporal)",
+      "widgets_values": ["control_v11f1p_sd15_depth.pth", "diff_control_sd15_temporalnet_fp16.safetensors"]
+    },
+    {
+      "id": 7,
+      "type": "ControlNetLoaderAdvanced",
+      "pos": [400, 480],
+      "size": [315, 78],
+      "title": "ControlNet Normal (Temporal)",
+      "widgets_values": ["control_v11p_sd15_normalbae.pth", null]
+    },
+    {
+      "id": 8,
+      "type": "ACN_AdvancedControlNetApply",
+      "pos": [750, 350],
+      "size": [315, 200],
+      "title": "Apply Depth Control (Video)",
+      "widgets_values": [0.8, 0.0, 1.0, "soft_injection", "concat"]
+    },
+    {
+      "id": 9,
+      "type": "ACN_AdvancedControlNetApply",
+      "pos": [750, 580],
+      "size": [315, 200],
+      "title": "Apply Normal Control (Video)",
+      "widgets_values": [0.6, 0.0, 1.0, "soft_injection", "concat"]
+    },
+    {
+      "id": 10,
+      "type": "CLIPTextEncode",
+      "pos": [400, 50],
+      "size": [400, 100],
+      "title": "Prompt",
+      "widgets_values": ["photorealistic 3D render, cinematic, high quality, detailed textures, volumetric lighting"]
+    },
+    {
+      "id": 11,
+      "type": "CLIPTextEncode",
+      "pos": [400, 180],
+      "size": [400, 100],
+      "title": "Negative",
+      "widgets_values": ["blurry, low quality, flickering, temporal artifacts, jitter, noise"]
+    },
+    {
+      "id": 12,
+      "type": "ADE_EmptyLatentImageLarge",
+      "pos": [750, 50],
+      "size": [315, 106],
+      "title": "Video Latent",
+      "widgets_values": [1024, 576, 24, 1]
+    },
+    {
+      "id": 13,
+      "type": "KSampler",
+      "pos": [1100, 300],
+      "size": [315, 262],
+      "title": "Video Sampler",
+      "widgets_values": [42, "fixed", 20, 7.0, "euler_ancestral", "normal", 1.0]
+    },
+    {
+      "id": 14,
+      "type": "VAEDecode",
+      "pos": [1450, 300],
+      "size": [210, 46],
+      "title": "Decode Video"
+    },
+    {
+      "id": 15,
+      "type": "VHS_VideoCombine",
+      "pos": [1700, 300],
+      "size": [315, 290],
+      "title": "Export Video (to Houdini)",
+      "widgets_values": [24, 0, "carwash_output", "video/h264-mp4", false, true, null]
+    },
+    {
+      "id": 16,
+      "type": "VHS_SplitImages",
+      "pos": [1700, 620],
+      "size": [315, 80],
+      "title": "Split to Frames (Optional)",
+      "widgets_values": [0]
+    },
+    {
+      "id": 17,
+      "type": "SaveImage",
+      "pos": [2050, 620],
+      "size": [315, 270],
+      "title": "Save Frame Sequence",
+      "widgets_values": ["carwash_frame_", "png"]
+    },
+    {
+      "id": 20,
+      "type": "ADE_MultivalDynamic",
+      "pos": [750, 800],
+      "size": [315, 100],
+      "title": "Motion Scale",
+      "widgets_values": [1.0]
+    },
+    {
+      "id": 21,
+      "type": "ADE_LoopedUniformContextOptions",
+      "pos": [50, 850],
+      "size": [315, 150],
+      "title": "Context Options (Loop-aware)",
+      "widgets_values": [16, 4, 4, "uniform", false, "pyramid", 0.0, 1.0, true]
+    },
+    {
+      "id": 25,
+      "type": "IPAdapterUnifiedLoader",
+      "pos": [50, 1050],
+      "size": [315, 100],
+      "title": "Style Reference (IP-Adapter)",
+      "widgets_values": ["PLUS (high strength)"]
+    },
+    {
+      "id": 26,
+      "type": "LoadImage",
+      "pos": [50, 1200],
+      "size": [315, 314],
+      "title": "Style Reference Frame",
+      "widgets_values": ["style_reference.png", "image"]
+    },
+    {
+      "id": 27,
+      "type": "IPAdapterApply",
+      "pos": [400, 1100],
+      "size": [315, 150],
+      "title": "Apply Style to All Frames",
+      "widgets_values": [1.0, 0.0, 1.0, "standard", false]
+    },
+    {
+      "id": 30,
+      "type": "Note",
+      "pos": [50, 1550],
+      "size": [800, 300],
+      "title": "CarWash AnimateDiff Video Workflow",
+      "properties": {
+        "text": "CARWASH VIDEO GENERATION WORKFLOW\n=====================================\n\nThis workflow generates temporally-coherent VIDEO from Houdini AOVs.\n\nINPUTS FROM HOUDINI:\n- Depth video/sequence: Rendered depth pass as MP4 or EXR sequence\n- Normal video/sequence: Rendered normal pass as MP4 or EXR sequence\n- Style reference: Single frame defining the look\n\nKEY COMPONENTS:\n1. AnimateDiff: Motion-aware diffusion (no flickering!)\n2. TemporalNet ControlNet: Maintains structure across frames\n3. IP-Adapter: Style consistency across all frames\n4. Context Options: Handles long videos via sliding window\n\nOUTPUTS:\n- MP4 video file (for preview)\n- Frame sequence (for Houdini composite)\n\nREQUIRED MODELS:\n- mm_sd_v15_v2.ckpt (AnimateDiff motion model)\n- control_v11f1p_sd15_depth.pth\n- control_v11p_sd15_normalbae.pth\n- ip-adapter-plus_sd15.bin\n- Any SD 1.5 checkpoint\n\nVIDEO LENGTH:\n- 16-24 frames per batch (context window)\n- Longer videos use sliding window with overlap"
+      }
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "MODEL"],
+    [2, 2, 0, 3, 1, "MOTION_MODEL_ADE"],
+    [3, 3, 0, 13, 0, "MODEL"],
+    [4, 1, 1, 10, 0, "CLIP"],
+    [5, 1, 1, 11, 0, "CLIP"],
+    [6, 6, 0, 8, 1, "CONTROL_NET"],
+    [7, 4, 0, 8, 3, "IMAGE"],
+    [8, 7, 0, 9, 1, "CONTROL_NET"],
+    [9, 5, 0, 9, 3, "IMAGE"],
+    [10, 10, 0, 8, 0, "CONDITIONING"],
+    [11, 11, 0, 8, 1, "CONDITIONING"],
+    [12, 8, 0, 9, 0, "CONDITIONING"],
+    [13, 8, 1, 9, 1, "CONDITIONING"],
+    [14, 9, 0, 13, 1, "CONDITIONING"],
+    [15, 9, 1, 13, 2, "CONDITIONING"],
+    [16, 12, 0, 13, 3, "LATENT"],
+    [17, 13, 0, 14, 0, "LATENT"],
+    [18, 1, 2, 14, 1, "VAE"],
+    [19, 14, 0, 15, 0, "IMAGE"],
+    [20, 14, 0, 16, 0, "IMAGE"],
+    [21, 16, 0, 17, 0, "IMAGE"],
+    [22, 21, 0, 3, 2, "CONTEXT_OPTIONS"],
+    [23, 25, 0, 27, 0, "IPADAPTER"],
+    [24, 25, 1, 27, 2, "CLIP_VISION"],
+    [25, 26, 0, 27, 1, "IMAGE"],
+    [26, 3, 0, 27, 3, "MODEL"],
+    [27, 27, 0, 13, 0, "MODEL"]
+  ],
+  "groups": [
+    {
+      "title": "AnimateDiff Motion",
+      "bounding": [40, 30, 700, 280],
+      "color": "#3f789e"
+    },
+    {
+      "title": "Houdini Video Inputs",
+      "bounding": [40, 320, 350, 500],
+      "color": "#8A8A30"
+    },
+    {
+      "title": "Temporal ControlNet",
+      "bounding": [390, 320, 700, 500],
+      "color": "#8C4646"
+    },
+    {
+      "title": "Video Generation",
+      "bounding": [1090, 280, 400, 350],
+      "color": "#3E783E"
+    },
+    {
+      "title": "Video Output",
+      "bounding": [1690, 280, 700, 400],
+      "color": "#A1309B"
+    },
+    {
+      "title": "Style Memory",
+      "bounding": [40, 1020, 700, 500],
+      "color": "#6B3E8C"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "carwash_metadata": {
+      "version": "2.0.0",
+      "type": "video",
+      "description": "CarWash Video Generation with AnimateDiff",
+      "required_nodes": [
+        "ComfyUI-AnimateDiff-Evolved",
+        "ComfyUI-VideoHelperSuite",
+        "ComfyUI-Advanced-ControlNet",
+        "ComfyUI_IPAdapter_plus"
+      ],
+      "inputs": {
+        "depth_video": {"node_id": 4, "type": "mp4/exr_sequence"},
+        "normal_video": {"node_id": 5, "type": "mp4/exr_sequence"},
+        "style_reference": {"node_id": 26, "type": "image", "optional": true}
+      },
+      "outputs": {
+        "video": {"node_id": 15, "type": "mp4"},
+        "frames": {"node_id": 17, "type": "png_sequence"}
+      },
+      "houdini_integration": {
+        "input_aovs": ["depth", "normal"],
+        "output_format": "exr_sequence_or_mp4",
+        "frame_rate": 24,
+        "recommended_batch": 16
+      }
+    }
+  }
+}

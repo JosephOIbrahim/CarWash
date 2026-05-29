@@ -126,6 +126,9 @@ public:
     /// Set the current determinism mode
     void SetDeterminismMode(TfToken const& mode);
 
+    /// Get the current render settings map (for render pass)
+    HdRenderSettingsMap const& GetRenderSettingsMap() const;
+
 private:
     /// Initialize the delegate with default settings
     void _Initialize();

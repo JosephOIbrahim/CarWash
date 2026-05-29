@@ -346,7 +346,10 @@ HdCarWashComfyClient::IsServerAvailable() const
 {
     // Try to connect to server
     std::string response = const_cast<HdCarWashComfyClient*>(this)->_HttpGet("/system_stats");
-    return !response.empty();
+    bool available = !response.empty();
+    TF_DEBUG_MSG(HD_CARWASH, "IsServerAvailable: %s (response size=%zu)\n",
+                 available ? "YES" : "NO", response.size());
+    return available;
 }
 
 HdCarWashRenderResult
@@ -1694,8 +1697,15 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     // Create socket
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpGet: socket() failed, WSA error=%d\n",
+                     WSAGetLastError());
         return "";
     }
+
+    // Set socket timeouts (3 seconds for send/recv)
+    DWORD timeout = 3000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
     // Resolve hostname
     struct addrinfo hints = {}, *result = nullptr;
@@ -1703,17 +1713,52 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &result) != 0) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpGet: getaddrinfo(%s:%d) failed, WSA error=%d\n",
+                     host.c_str(), port, WSAGetLastError());
         closesocket(sock);
         return "";
     }
 
-    // Connect
-    if (connect(sock, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
-        freeaddrinfo(result);
-        closesocket(sock);
-        return "";
+    // Non-blocking connect with timeout
+    u_long nonBlocking = 1;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
+
+    int connectResult = connect(sock, result->ai_addr, (int)result->ai_addrlen);
+    if (connectResult == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK) {
+            // Connection in progress — wait with select()
+            fd_set writeSet, exceptSet;
+            FD_ZERO(&writeSet);
+            FD_ZERO(&exceptSet);
+            FD_SET(sock, &writeSet);
+            FD_SET(sock, &exceptSet);
+
+            struct timeval tv;
+            tv.tv_sec = 3;
+            tv.tv_usec = 0;
+
+            int selectResult = select(0, nullptr, &writeSet, &exceptSet, &tv);
+            if (selectResult <= 0 || FD_ISSET(sock, &exceptSet)) {
+                TF_DEBUG_MSG(HD_CARWASH, "_HttpGet: connect(%s:%d) timed out or failed (select=%d, WSA=%d)\n",
+                             host.c_str(), port, selectResult, WSAGetLastError());
+                freeaddrinfo(result);
+                closesocket(sock);
+                return "";
+            }
+        } else {
+            TF_DEBUG_MSG(HD_CARWASH, "_HttpGet: connect(%s:%d) failed immediately, WSA error=%d\n",
+                         host.c_str(), port, err);
+            freeaddrinfo(result);
+            closesocket(sock);
+            return "";
+        }
     }
     freeaddrinfo(result);
+
+    // Switch back to blocking mode for send/recv
+    nonBlocking = 0;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
 
     // Send HTTP request
     std::ostringstream request;
@@ -1723,7 +1768,12 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     request << "\r\n";
 
     std::string reqStr = request.str();
-    send(sock, reqStr.c_str(), (int)reqStr.size(), 0);
+    if (send(sock, reqStr.c_str(), (int)reqStr.size(), 0) == SOCKET_ERROR) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpGet: send() failed, WSA error=%d\n",
+                     WSAGetLastError());
+        closesocket(sock);
+        return "";
+    }
 
     // Receive response (handle binary data correctly - don't truncate at null bytes!)
     std::string response;
@@ -1769,24 +1819,66 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
 
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpPost: socket() failed, WSA error=%d\n",
+                     WSAGetLastError());
         return "";
     }
+
+    // Set socket timeouts (3 seconds for send/recv)
+    DWORD timeout = 3000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
     struct addrinfo hints = {}, *result = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &result) != 0) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpPost: getaddrinfo(%s:%d) failed, WSA error=%d\n",
+                     host.c_str(), port, WSAGetLastError());
         closesocket(sock);
         return "";
     }
 
-    if (connect(sock, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
-        freeaddrinfo(result);
-        closesocket(sock);
-        return "";
+    // Non-blocking connect with timeout
+    u_long nonBlocking = 1;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
+
+    int connectResult = connect(sock, result->ai_addr, (int)result->ai_addrlen);
+    if (connectResult == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK) {
+            fd_set writeSet, exceptSet;
+            FD_ZERO(&writeSet);
+            FD_ZERO(&exceptSet);
+            FD_SET(sock, &writeSet);
+            FD_SET(sock, &exceptSet);
+
+            struct timeval tv;
+            tv.tv_sec = 3;
+            tv.tv_usec = 0;
+
+            int selectResult = select(0, nullptr, &writeSet, &exceptSet, &tv);
+            if (selectResult <= 0 || FD_ISSET(sock, &exceptSet)) {
+                TF_DEBUG_MSG(HD_CARWASH, "_HttpPost: connect(%s:%d) timed out or failed (select=%d, WSA=%d)\n",
+                             host.c_str(), port, selectResult, WSAGetLastError());
+                freeaddrinfo(result);
+                closesocket(sock);
+                return "";
+            }
+        } else {
+            TF_DEBUG_MSG(HD_CARWASH, "_HttpPost: connect(%s:%d) failed immediately, WSA error=%d\n",
+                         host.c_str(), port, err);
+            freeaddrinfo(result);
+            closesocket(sock);
+            return "";
+        }
     }
     freeaddrinfo(result);
+
+    // Switch back to blocking mode for send/recv
+    nonBlocking = 0;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
 
     // Send HTTP POST request
     std::ostringstream request;
@@ -1799,7 +1891,12 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
     request << body;
 
     std::string reqStr = request.str();
-    send(sock, reqStr.c_str(), (int)reqStr.size(), 0);
+    if (send(sock, reqStr.c_str(), (int)reqStr.size(), 0) == SOCKET_ERROR) {
+        TF_DEBUG_MSG(HD_CARWASH, "_HttpPost: send() failed, WSA error=%d\n",
+                     WSAGetLastError());
+        closesocket(sock);
+        return "";
+    }
 
     // Receive response (handle binary data correctly - don't truncate at null bytes!)
     std::string response;

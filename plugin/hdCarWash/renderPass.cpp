@@ -23,6 +23,18 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+// Helper to safely get typed values from settings map
+namespace {
+    template<typename T>
+    T GetSetting(const HdRenderSettingsMap& settings, const TfToken& key, const T& defaultValue) {
+        auto it = settings.find(key);
+        if (it != settings.end() && it->second.IsHolding<T>()) {
+            return it->second.UncheckedGet<T>();
+        }
+        return defaultValue;
+    }
+}
+
 HdCarWashRenderPass::HdCarWashRenderPass(
     HdRenderIndex* index,
     HdRprimCollection const& collection,
@@ -30,10 +42,30 @@ HdCarWashRenderPass::HdCarWashRenderPass(
     : HdRenderPass(index, collection)
     , _delegate(delegate)
     , _rasterizer(std::make_unique<HdCarWashRasterizer>())
+    , _comfyClient(std::make_unique<HdCarWashComfyClient>("http://127.0.0.1:8188", "ws://localhost:9999"))
+    , _styleParams()
+    , _enableAI(true)  // Enable AI by default, will gracefully fallback if unavailable
     , _frameNumber(0)
     , _converged(false)
 {
-    TF_DEBUG_MSG(HD_CARWASH, "HdCarWashRenderPass created\n");
+    // Set default style parameters
+    _styleParams.prompt = "photorealistic 3D render, cinematic lighting, sharp details";
+    _styleParams.negativePrompt = "blurry, low quality, distorted";
+    _styleParams.inferenceSteps = 20;
+    _styleParams.guidanceScale = 7.5f;
+    _styleParams.seed = 42;  // Deterministic seed for reproducibility
+    _styleParams.useDepthControl = true;
+    _styleParams.useNormalControl = false;  // Disabled - requires canny ControlNet model
+    _styleParams.controlNetStrength = 0.8f;
+
+    // Render mode settings
+    _syncRenderMode = false;     // Default: async for viewport interactivity
+    _progressiveRefine = true;   // Default: keep refining until AI completes
+
+    TF_DEBUG_MSG(HD_CARWASH, "HdCarWashRenderPass created (AI=%s, sync=%s, progressive=%s)\n",
+                 _enableAI ? "enabled" : "disabled",
+                 _syncRenderMode ? "yes" : "no",
+                 _progressiveRefine ? "yes" : "no");
 }
 
 HdCarWashRenderPass::~HdCarWashRenderPass()
@@ -44,6 +76,11 @@ HdCarWashRenderPass::~HdCarWashRenderPass()
 bool
 HdCarWashRenderPass::IsConverged() const
 {
+    // If progressive refinement is enabled and AI is still processing,
+    // report NOT converged so Hydra keeps calling _Execute
+    if (_progressiveRefine && _aiProcessing.load()) {
+        return false;
+    }
     return _converged;
 }
 
@@ -59,7 +96,8 @@ HdCarWashRenderPass::_Execute(
     _ExecutePhase1(renderPassState);
 
     _frameNumber++;
-    _converged = true;  // Single-pass render for now
+    // _converged is set by _ExecutePhase1's convergence logic (lines 440-453)
+    // Do NOT override here — it kills progressive refinement
 }
 
 void
@@ -114,9 +152,53 @@ HdCarWashRenderPass::_ExecutePhase1(
     _framebuffer.Resize(width, height);
     _rasterizer->SetFramebuffer(&_framebuffer);
 
-    // Clear buffers
-    GfVec4f clearColor(0.1f, 0.1f, 0.15f, 1.0f);  // Dark blue-grey background
-    _rasterizer->Clear(clearColor, 1.0f);
+    // Read style parameters from render settings
+    HdRenderSettingsMap const& settings = _delegate->GetRenderSettingsMap();
+    _styleParams.prompt = GetSetting<std::string>(settings,
+        HdCarWashSettingsTokens->prompt, _styleParams.prompt);
+    _styleParams.negativePrompt = GetSetting<std::string>(settings,
+        HdCarWashSettingsTokens->negativePrompt, _styleParams.negativePrompt);
+    _styleParams.inferenceSteps = GetSetting<int>(settings,
+        HdCarWashSettingsTokens->inferenceSteps, _styleParams.inferenceSteps);
+    _styleParams.guidanceScale = GetSetting<float>(settings,
+        HdCarWashSettingsTokens->guidanceScale, _styleParams.guidanceScale);
+    _styleParams.seed = GetSetting<int>(settings,
+        HdCarWashSettingsTokens->seed, _styleParams.seed);
+    _styleParams.controlNetStrength = GetSetting<float>(settings,
+        HdCarWashSettingsTokens->depthControlNetStrength, _styleParams.controlNetStrength);
+    _styleParams.normalControlNetStrength = GetSetting<float>(settings,
+        HdCarWashSettingsTokens->normalControlNetStrength, _styleParams.normalControlNetStrength);
+    _styleParams.useDepthControl = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->enableDepthControl, _styleParams.useDepthControl);
+    _styleParams.useNormalControl = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->enableNormalControl, _styleParams.useNormalControl);
+
+    // Render mode settings
+    _enableAI = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->enableAI, _enableAI);
+    _syncRenderMode = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->syncRenderMode, _syncRenderMode);
+    _progressiveRefine = GetSetting<bool>(settings,
+        HdCarWashSettingsTokens->progressiveRefine, _progressiveRefine);
+
+    debugLog << "Render mode: enableAI=" << _enableAI
+             << ", sync=" << _syncRenderMode
+             << ", progressive=" << _progressiveRefine << std::endl;
+    debugLog << "Style params: prompt='" << _styleParams.prompt.substr(0, 50) << "...'" << std::endl;
+    debugLog << "  depthStrength=" << _styleParams.controlNetStrength
+             << ", useDepth=" << _styleParams.useDepthControl
+             << ", useNormal=" << _styleParams.useNormalControl << std::endl;
+
+    // Clear buffers - but preserve color if AI processing is active
+    // This prevents flickering between AI frames
+    bool preserveColorBuffer = _enableAI && _aiProcessing.load();
+    if (!preserveColorBuffer) {
+        GfVec4f clearColor(0.1f, 0.1f, 0.15f, 1.0f);  // Dark blue-grey background
+        _rasterizer->Clear(clearColor, 1.0f);
+    } else {
+        // Only clear depth/normal, preserve color from previous AI result
+        _rasterizer->ClearDepthOnly(1.0f);
+    }
 
     // Get camera and set up matrices
     HdCarWashCamera* camera = _GetCamera(renderPassState);
@@ -130,7 +212,15 @@ HdCarWashRenderPass::_ExecutePhase1(
         _rasterizer->SetViewMatrix(viewMatrix);
         _rasterizer->SetViewProjectionMatrix(viewProj);
 
-        TF_DEBUG_MSG(HD_CARWASH, "Camera set up, aspect ratio: %.2f\n", aspectRatio);
+        // Extract camera position from view matrix (inverse of camera transform)
+        GfMatrix4d invView = viewMatrix.GetInverse();
+        GfVec3f cameraPos(static_cast<float>(invView[3][0]),
+                          static_cast<float>(invView[3][1]),
+                          static_cast<float>(invView[3][2]));
+        _rasterizer->SetCameraPosition(cameraPos);
+
+        TF_DEBUG_MSG(HD_CARWASH, "Camera set up, aspect ratio: %.2f, pos: (%.2f, %.2f, %.2f)\n",
+                     aspectRatio, cameraPos[0], cameraPos[1], cameraPos[2]);
     } else {
         // Default camera looking at origin
         GfMatrix4d viewMatrix(1.0);
@@ -139,6 +229,7 @@ HdCarWashRenderPass::_ExecutePhase1(
 
         _rasterizer->SetViewMatrix(viewMatrix);
         _rasterizer->SetViewProjectionMatrix(viewMatrix * projMatrix);
+        _rasterizer->SetCameraPosition(GfVec3f(0.0f, 0.0f, 5.0f));
 
         TF_DEBUG_MSG(HD_CARWASH, "Using default camera\n");
     }
@@ -180,20 +271,192 @@ HdCarWashRenderPass::_ExecutePhase1(
     debugLog << "Meshes rasterized: " << meshCount << std::endl;
     TF_DEBUG_MSG(HD_CARWASH, "Rasterized %d meshes\n", meshCount);
 
-    // Compute determinism hash
+    // Compute determinism hash (before AI processing)
     HdCarWashFrameHash frameHash = _framebuffer.ComputeHash(16);  // Sample every 16th pixel
-    debugLog << "FrameHash: 0x" << std::hex << frameHash.combined << std::dec
+    debugLog << "FrameHash (pre-AI): 0x" << std::hex << frameHash.combined << std::dec
              << " (sampled=" << frameHash.pixelsSampled
              << ", nonEmpty=" << frameHash.nonEmptyPixels << ")" << std::endl;
-    TF_DEBUG_MSG(HD_CARWASH, "Frame hash: 0x%016llx\n",
+    TF_DEBUG_MSG(HD_CARWASH, "Frame hash (pre-AI): 0x%016llx\n",
                  static_cast<unsigned long long>(frameHash.combined));
+
+    // =========================================================================
+    // AI STYLIZATION (Non-Blocking ComfyUI Integration)
+    // =========================================================================
+    bool aiProcessed = false;
+
+    // Check if previous async AI result is ready
+    if (_pendingAiResult.valid()) {
+        auto status = _pendingAiResult.wait_for(std::chrono::milliseconds(0));
+        if (status == std::future_status::ready) {
+            debugLog << "Previous AI result ready, retrieving..." << std::endl;
+            HdCarWashRenderResult result = _pendingAiResult.get();
+            _aiProcessing.store(false);
+
+            if (result.success) {
+                debugLog << "AI processing successful!" << std::endl;
+                debugLog << "  Result size: " << result.styledImage.size() << " pixels" << std::endl;
+                TF_DEBUG_MSG(HD_CARWASH, "AI stylization complete, %zu pixels\n",
+                             result.styledImage.size());
+
+                // Overwrite color buffer with AI result (thread-safe swap)
+                std::lock_guard<std::mutex> lock(_resultMutex);
+                size_t fbSize = _framebuffer.color.size();
+                size_t aiSize = result.styledImage.size();
+
+                if (aiSize == fbSize) {
+                    _framebuffer.color = std::move(result.styledImage);
+                    aiProcessed = true;
+                    debugLog << "AI result: exact size match" << std::endl;
+                } else {
+                    // Handle SD/SDXL 8-pixel rounding: allow up to 8 pixel difference in each dimension
+                    int widthDiff = static_cast<int>(width) - static_cast<int>(result.width);
+                    int heightDiff = static_cast<int>(height) - static_cast<int>(result.height);
+                    bool widthOK = (widthDiff >= 0 && widthDiff <= 8);
+                    bool heightOK = (heightDiff >= 0 && heightDiff <= 8);
+
+                    debugLog << "AI result: " << result.width << "x" << result.height
+                             << " vs framebuffer " << width << "x" << height
+                             << " (diff: " << widthDiff << "x" << heightDiff << ")" << std::endl;
+
+                    if (widthOK && heightOK && result.width > 0 && result.height > 0) {
+                        // Copy AI result into framebuffer, centered or top-left aligned
+                        size_t copyWidth = std::min(static_cast<size_t>(result.width), static_cast<size_t>(width));
+                        size_t copyHeight = std::min(static_cast<size_t>(result.height), static_cast<size_t>(height));
+
+                        for (size_t y = 0; y < copyHeight; y++) {
+                            for (size_t x = 0; x < copyWidth; x++) {
+                                size_t srcIdx = y * result.width + x;
+                                size_t dstIdx = y * width + x;
+                                if (srcIdx < aiSize && dstIdx < fbSize) {
+                                    _framebuffer.color[dstIdx] = result.styledImage[srcIdx];
+                                }
+                            }
+                        }
+                        aiProcessed = true;
+                        debugLog << "AI result: copied " << copyWidth << "x" << copyHeight << " pixels" << std::endl;
+                    } else {
+                        debugLog << "WARNING: AI result size mismatch too large, keeping CPU render" << std::endl;
+                        debugLog << "  (widthOK=" << widthOK << ", heightOK=" << heightOK << ")" << std::endl;
+                    }
+                }
+
+                if (aiProcessed) {
+                    HdCarWashFrameHash postAIHash = _framebuffer.ComputeHash(16);
+                    debugLog << "FrameHash (post-AI): 0x" << std::hex << postAIHash.combined
+                             << std::dec << std::endl;
+                }
+            } else {
+                debugLog << "AI processing failed: " << result.errorMessage << std::endl;
+            }
+        } else {
+            debugLog << "AI processing still in progress..." << std::endl;
+        }
+    }
+
+    // Launch new async AI processing if not already running
+    if (_enableAI && _comfyClient && !_aiProcessing.load()) {
+        debugLog << "Checking ComfyUI server availability..." << std::endl;
+
+        if (_comfyClient->IsServerAvailable()) {
+            debugLog << "ComfyUI server available, launching async processing..." << std::endl;
+            TF_DEBUG_MSG(HD_CARWASH, "Launching async AI stylization\n");
+
+            // Mark as processing BEFORE launching async
+            _aiProcessing.store(true);
+
+            // Launch async with COPY of framebuffer and params (safe capture)
+            // The ProcessFrameAsync uses value capture internally
+            _pendingAiResult = _comfyClient->ProcessFrameAsync(_framebuffer, _styleParams);
+
+            debugLog << "Async AI processing launched" << std::endl;
+        } else {
+            debugLog << "ComfyUI server not available, using CPU rasterization only" << std::endl;
+            TF_DEBUG_MSG(HD_CARWASH, "ComfyUI not available, fallback to CPU render\n");
+        }
+    } else if (!_enableAI) {
+        debugLog << "AI disabled" << std::endl;
+    }
+
+    debugLog << "AI processed this frame: " << (aiProcessed ? "yes" : "no")
+             << ", async pending: " << (_aiProcessing.load() ? "yes" : "no") << std::endl;
+
+    // =========================================================================
+    // SYNCHRONOUS MODE: Wait for AI to complete before returning
+    // =========================================================================
+    if (_syncRenderMode && _enableAI && _aiProcessing.load() && _pendingAiResult.valid()) {
+        debugLog << "Sync mode: waiting for AI to complete..." << std::endl;
+        TF_DEBUG_MSG(HD_CARWASH, "Sync mode: waiting for AI completion\n");
+
+        // Wait for the async result (blocking)
+        HdCarWashRenderResult syncResult = _pendingAiResult.get();
+        _aiProcessing.store(false);
+
+        if (syncResult.success) {
+            debugLog << "Sync AI completed successfully!" << std::endl;
+            std::lock_guard<std::mutex> lock(_resultMutex);
+            size_t fbSize = _framebuffer.color.size();
+            size_t aiSize = syncResult.styledImage.size();
+
+            if (aiSize == fbSize) {
+                _framebuffer.color = std::move(syncResult.styledImage);
+                aiProcessed = true;
+            } else {
+                // Handle SD/SDXL 8-pixel rounding
+                int widthDiff = static_cast<int>(width) - static_cast<int>(syncResult.width);
+                int heightDiff = static_cast<int>(height) - static_cast<int>(syncResult.height);
+                bool widthOK = (widthDiff >= 0 && widthDiff <= 8);
+                bool heightOK = (heightDiff >= 0 && heightDiff <= 8);
+
+                if (widthOK && heightOK && syncResult.width > 0 && syncResult.height > 0) {
+                    size_t copyWidth = std::min(static_cast<size_t>(syncResult.width), static_cast<size_t>(width));
+                    size_t copyHeight = std::min(static_cast<size_t>(syncResult.height), static_cast<size_t>(height));
+                    for (size_t y = 0; y < copyHeight; y++) {
+                        for (size_t x = 0; x < copyWidth; x++) {
+                            size_t srcIdx = y * syncResult.width + x;
+                            size_t dstIdx = y * width + x;
+                            if (srcIdx < aiSize && dstIdx < fbSize) {
+                                _framebuffer.color[dstIdx] = syncResult.styledImage[srcIdx];
+                            }
+                        }
+                    }
+                    aiProcessed = true;
+                    debugLog << "Sync AI: copied " << copyWidth << "x" << copyHeight << " pixels" << std::endl;
+                }
+            }
+        } else {
+            debugLog << "Sync AI failed: " << syncResult.errorMessage << std::endl;
+        }
+    }
 
     // Copy framebuffer to AOV buffers
     _CopyFramebufferToAOVs(renderPassState);
 
-    debugLog << "Phase 1 complete" << std::endl;
+    // =========================================================================
+    // CONVERGENCE LOGIC
+    // =========================================================================
+    // - If AI is disabled: always converged
+    // - If sync mode: we waited above, so converged
+    // - If progressive mode: only converge when AI has completed at least once
+    // - Otherwise: converge immediately (original behavior)
+    if (!_enableAI) {
+        _converged = true;
+        debugLog << "Converged: AI disabled" << std::endl;
+    } else if (_syncRenderMode) {
+        _converged = true;
+        debugLog << "Converged: sync mode completed" << std::endl;
+    } else if (_progressiveRefine) {
+        // In progressive mode, converge only when AI processing is done
+        _converged = aiProcessed && !_aiProcessing.load();
+        debugLog << "Progressive mode: converged=" << _converged << std::endl;
+    } else {
+        _converged = true;
+        debugLog << "Converged: default behavior" << std::endl;
+    }
+
+    debugLog << "Phase 1 complete, converged=" << _converged << std::endl;
     debugLog.close();
-    TF_DEBUG_MSG(HD_CARWASH, "Phase 1 render complete\n");
+    TF_DEBUG_MSG(HD_CARWASH, "Phase 1 render complete (converged=%s)\n",
+                 _converged ? "yes" : "no");
 }
 
 HdCarWashCamera*

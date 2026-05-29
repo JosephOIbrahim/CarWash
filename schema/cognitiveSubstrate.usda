@@ -1,0 +1,11 @@
+#usda 1.0
+(
+    doc = "Cognitive Substrate Schema - Placeholder"
+    subLayers = []
+)
+
+def "CognitiveSubstrate" (
+    doc = "Schema for cognitive substrate integration"
+)
+{
+}

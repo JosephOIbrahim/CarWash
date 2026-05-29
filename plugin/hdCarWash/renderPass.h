@@ -12,8 +12,12 @@
 
 #include "api.h"
 #include "rasterizer.h"
+#include "comfyClient.h"
 
 #include <memory>
+#include <future>
+#include <atomic>
+#include <mutex>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -83,8 +87,36 @@ private:
     /// CPU rasterizer
     std::unique_ptr<HdCarWashRasterizer> _rasterizer;
 
+    /// ComfyUI client for AI stylization
+    std::unique_ptr<HdCarWashComfyClient> _comfyClient;
+
+    /// AI stylization parameters
+    HdCarWashStyleParams _styleParams;
+
+    /// Enable AI stylization (false = CPU rasterization only)
+    bool _enableAI;
+
+    /// Synchronous render mode (wait for AI to complete before returning)
+    /// Good for final renders, bad for viewport interactivity
+    bool _syncRenderMode;
+
+    /// Progressive refinement mode (keep refining until AI completes)
+    bool _progressiveRefine;
+
     /// Internal framebuffer
     HdCarWashFramebuffer _framebuffer;
+
+    /// Copy of framebuffer for async processing (value copy to avoid race conditions)
+    HdCarWashFramebuffer _asyncFramebufferCopy;
+
+    /// Pending async AI result
+    std::future<HdCarWashRenderResult> _pendingAiResult;
+
+    /// Flag indicating AI processing is in progress
+    std::atomic<bool> _aiProcessing{false};
+
+    /// Mutex for protecting result buffer swap
+    std::mutex _resultMutex;
 
     /// Current frame number
     int _frameNumber;

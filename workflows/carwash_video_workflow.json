@@ -1,0 +1,254 @@
+{
+  "last_node_id": 32,
+  "last_link_id": 45,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [50, 100],
+      "size": [315, 314],
+      "title": "Depth AOV (from Houdini)",
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["depth.exr", "image"]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [50, 450],
+      "size": [315, 314],
+      "title": "Normal AOV (from Houdini)",
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["normal.exr", "image"]
+    },
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [50, 800],
+      "size": [315, 314],
+      "title": "Previous Frame (Temporal)",
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["prev_frame.png", "image"]
+    },
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [450, 50],
+      "size": [315, 98],
+      "title": "SD Model",
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["realisticVisionV51_v51VAE.safetensors"]
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [450, 200],
+      "size": [400, 200],
+      "title": "Prompt (from CarWash HDA)",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["photorealistic 3D render, high quality, detailed, cinematic lighting"]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [450, 420],
+      "size": [400, 200],
+      "title": "Negative Prompt",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["blurry, low quality, artifacts, noise, grain, distorted"]
+    },
+    {
+      "id": 7,
+      "type": "ControlNetLoader",
+      "pos": [800, 100],
+      "size": [315, 58],
+      "title": "ControlNet Depth",
+      "properties": {"Node name for S&R": "ControlNetLoader"},
+      "widgets_values": ["control_v11f1p_sd15_depth.pth"]
+    },
+    {
+      "id": 8,
+      "type": "ControlNetLoader",
+      "pos": [800, 200],
+      "size": [315, 58],
+      "title": "ControlNet Normal",
+      "properties": {"Node name for S&R": "ControlNetLoader"},
+      "widgets_values": ["control_v11p_sd15_normalbae.pth"]
+    },
+    {
+      "id": 9,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [1150, 100],
+      "size": [315, 186],
+      "title": "Apply Depth Control",
+      "properties": {"Node name for S&R": "ControlNetApplyAdvanced"},
+      "widgets_values": [0.8, 0.0, 1.0]
+    },
+    {
+      "id": 10,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [1150, 320],
+      "size": [315, 186],
+      "title": "Apply Normal Control",
+      "properties": {"Node name for S&R": "ControlNetApplyAdvanced"},
+      "widgets_values": [0.6, 0.0, 1.0]
+    },
+    {
+      "id": 11,
+      "type": "EmptyLatentImage",
+      "pos": [800, 400],
+      "size": [315, 106],
+      "title": "Latent Size",
+      "properties": {"Node name for S&R": "EmptyLatentImage"},
+      "widgets_values": [1024, 576, 1]
+    },
+    {
+      "id": 12,
+      "type": "KSampler",
+      "pos": [1500, 200],
+      "size": [315, 262],
+      "title": "Main Sampler",
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [42, "fixed", 20, 7.0, "euler_ancestral", "normal", 1.0]
+    },
+    {
+      "id": 13,
+      "type": "VAEDecode",
+      "pos": [1850, 200],
+      "size": [210, 46],
+      "title": "Decode",
+      "properties": {"Node name for S&R": "VAEDecode"}
+    },
+    {
+      "id": 14,
+      "type": "ImageBlend",
+      "pos": [2100, 200],
+      "size": [315, 102],
+      "title": "Temporal Blend",
+      "properties": {"Node name for S&R": "ImageBlend"},
+      "widgets_values": [0.3, "normal"]
+    },
+    {
+      "id": 15,
+      "type": "SaveImage",
+      "pos": [2450, 200],
+      "size": [315, 270],
+      "title": "Output to Houdini",
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["carwash_output", "png"]
+    },
+    {
+      "id": 16,
+      "type": "Note",
+      "pos": [50, 1150],
+      "size": [600, 200],
+      "title": "CarWash Video Workflow",
+      "properties": {"text": "CARWASH AI RENDER WORKFLOW\n\nInputs from Houdini:\n- Depth AOV: Structural depth for ControlNet\n- Normal AOV: Surface normals for detail\n- Previous Frame: For temporal consistency\n\nParameters from CarWash HDA:\n- prompt, negativePrompt -> CLIP encoders\n- seed -> KSampler\n- steps -> KSampler\n- cfg -> KSampler\n- depthStrength -> ControlNet Depth strength\n- normalStrength -> ControlNet Normal strength\n- temporalStrength -> ImageBlend factor\n\nFor Animation:\n1. Render depth/normal AOVs from Houdini\n2. Process frame-by-frame with temporal blending\n3. Previous frame feeds into next iteration"}
+    },
+    {
+      "id": 20,
+      "type": "IPAdapterLoader",
+      "pos": [800, 550],
+      "size": [315, 58],
+      "title": "Style Memory (IP-Adapter)",
+      "properties": {"Node name for S&R": "IPAdapterLoader"},
+      "widgets_values": ["ip-adapter_sd15.bin"]
+    },
+    {
+      "id": 21,
+      "type": "LoadImage",
+      "pos": [50, 1400],
+      "size": [315, 314],
+      "title": "Style Reference Image",
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["style_reference.png", "image"]
+    },
+    {
+      "id": 22,
+      "type": "IPAdapterApply",
+      "pos": [1150, 550],
+      "size": [315, 150],
+      "title": "Apply Style Memory",
+      "properties": {"Node name for S&R": "IPAdapterApply"},
+      "widgets_values": [1.0, 0.0, 1.0, "standard"]
+    }
+  ],
+  "links": [
+    [1, 4, 0, 5, 0, "CLIP"],
+    [2, 4, 0, 6, 0, "CLIP"],
+    [3, 4, 1, 13, 1, "VAE"],
+    [4, 7, 0, 9, 1, "CONTROL_NET"],
+    [5, 1, 0, 9, 3, "IMAGE"],
+    [6, 8, 0, 10, 1, "CONTROL_NET"],
+    [7, 2, 0, 10, 3, "IMAGE"],
+    [8, 5, 0, 9, 0, "CONDITIONING"],
+    [9, 6, 0, 9, 1, "CONDITIONING"],
+    [10, 9, 0, 10, 0, "CONDITIONING"],
+    [11, 9, 1, 10, 1, "CONDITIONING"],
+    [12, 10, 0, 12, 1, "CONDITIONING"],
+    [13, 10, 1, 12, 2, "CONDITIONING"],
+    [14, 4, 0, 12, 0, "MODEL"],
+    [15, 11, 0, 12, 3, "LATENT"],
+    [16, 12, 0, 13, 0, "LATENT"],
+    [17, 13, 0, 14, 0, "IMAGE"],
+    [18, 3, 0, 14, 1, "IMAGE"],
+    [19, 14, 0, 15, 0, "IMAGE"],
+    [20, 20, 0, 22, 0, "IPADAPTER"],
+    [21, 21, 0, 22, 1, "IMAGE"],
+    [22, 4, 0, 22, 2, "MODEL"]
+  ],
+  "groups": [
+    {
+      "title": "Houdini Inputs",
+      "bounding": [40, 50, 350, 1100],
+      "color": "#3f789e"
+    },
+    {
+      "title": "ControlNet Conditioning",
+      "bounding": [780, 50, 700, 500],
+      "color": "#8A8A30"
+    },
+    {
+      "title": "Generation",
+      "bounding": [1480, 150, 400, 400],
+      "color": "#8C4646"
+    },
+    {
+      "title": "Temporal + Output",
+      "bounding": [2080, 150, 700, 400],
+      "color": "#3E783E"
+    },
+    {
+      "title": "Style Memory",
+      "bounding": [780, 520, 700, 250],
+      "color": "#A1309B"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "carwash_metadata": {
+      "version": "1.0.0",
+      "description": "CarWash AI Render Workflow for Houdini",
+      "author": "CarWash Team",
+      "inputs": {
+        "depth": {"node_id": 1, "type": "exr", "from_houdini": true},
+        "normal": {"node_id": 2, "type": "exr", "from_houdini": true},
+        "prev_frame": {"node_id": 3, "type": "png", "temporal": true},
+        "style_ref": {"node_id": 21, "type": "png", "optional": true}
+      },
+      "outputs": {
+        "render": {"node_id": 15, "type": "png", "to_houdini": true}
+      },
+      "parameters": {
+        "prompt": {"node_id": 5, "widget": 0},
+        "negative_prompt": {"node_id": 6, "widget": 0},
+        "seed": {"node_id": 12, "widget": 0},
+        "steps": {"node_id": 12, "widget": 2},
+        "cfg": {"node_id": 12, "widget": 3},
+        "depth_strength": {"node_id": 9, "widget": 0},
+        "normal_strength": {"node_id": 10, "widget": 0},
+        "temporal_strength": {"node_id": 14, "widget": 0},
+        "style_strength": {"node_id": 22, "widget": 0}
+      }
+    }
+  }
+}

@@ -16,6 +16,7 @@
 #include "pxr/base/vt/array.h"
 
 #include "api.h"
+#include "light.h"
 
 #include <vector>
 #include <cstdint>
@@ -106,6 +107,18 @@ public:
     /// Clear all buffers
     void Clear(GfVec4f const& clearColor, float clearDepth);
 
+    /// Clear only depth and auxiliary buffers, preserve color
+    void ClearDepthOnly(float clearDepth);
+
+    /// Set scene lights for shading
+    void SetLights(const std::vector<HdCarWashLightData>& lights);
+
+    /// Clear lights
+    void ClearLights();
+
+    /// Set camera position for specular calculations
+    void SetCameraPosition(GfVec3f const& cameraPos);
+
 private:
     // Triangle vertex data after transformation
     struct Vertex {
@@ -117,8 +130,9 @@ private:
 
     // Screen-space triangle for rasterization
     struct ScreenTriangle {
-        GfVec3f screenPos[3]; // Screen XY + linear depth Z
-        GfVec3f worldNormal[3];
+        GfVec3f screenPos[3];   // Screen XY + linear depth Z
+        GfVec3f worldPos[3];    // World-space position for shading
+        GfVec3f worldNormal[3]; // World-space normal
         int objectId;
         int primId;
     };
@@ -128,6 +142,7 @@ private:
         GfVec3f const& p0, GfVec3f const& p1, GfVec3f const& p2,
         GfVec3f const& n0, GfVec3f const& n1, GfVec3f const& n2,
         GfMatrix4d const& modelMatrix,
+        GfMatrix4d const& mvpMatrix,
         int objectId, int primId,
         std::vector<ScreenTriangle>& outTriangles);
 
@@ -143,10 +158,17 @@ private:
     static float EdgeFunction(
         GfVec2f const& a, GfVec2f const& b, GfVec2f const& c);
 
+    // Compute shading for a pixel using scene lights
+    GfVec4f ComputeShading(
+        GfVec3f const& worldNormal,
+        GfVec3f const& worldPos) const;
+
     HdCarWashFramebuffer* _framebuffer;
     GfMatrix4d _viewProjMatrix;
     GfMatrix4d _viewMatrix;
     GfMatrix4d _normalMatrix;  // Inverse transpose of view for normals
+    GfVec3f _cameraPos;        // Camera position for specular
+    std::vector<HdCarWashLightData> _lights;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

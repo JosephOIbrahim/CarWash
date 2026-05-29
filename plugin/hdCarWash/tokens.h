@@ -66,7 +66,19 @@ TF_DECLARE_PUBLIC_TOKENS(HdCarWashAovTokens, HDCARWASH_API, HDCARWASH_AOV_TOKENS
     ((substrateAutoAnnotate, "carwash:substrate:autoAnnotate")) \
     /* Quality settings */ \
     ((inferenceSteps, "carwash:inferenceSteps")) \
-    ((guidanceScale, "carwash:guidanceScale"))
+    ((guidanceScale, "carwash:guidanceScale")) \
+    /* Prompt settings */ \
+    ((prompt, "carwash:prompt")) \
+    ((negativePrompt, "carwash:negativePrompt")) \
+    /* ControlNet settings */ \
+    ((depthControlNetStrength, "carwash:controlNet:depthStrength")) \
+    ((normalControlNetStrength, "carwash:controlNet:normalStrength")) \
+    ((enableDepthControl, "carwash:controlNet:enableDepth")) \
+    ((enableNormalControl, "carwash:controlNet:enableNormal")) \
+    /* Render mode settings */ \
+    ((syncRenderMode, "carwash:syncRenderMode")) \
+    ((enableAI, "carwash:enableAI")) \
+    ((progressiveRefine, "carwash:progressiveRefine"))
 
 TF_DECLARE_PUBLIC_TOKENS(HdCarWashSettingsTokens, HDCARWASH_API, HDCARWASH_SETTINGS_TOKENS);
 

@@ -174,6 +174,7 @@ HdCarWashRasterizer::HdCarWashRasterizer()
     , _viewProjMatrix(1.0)
     , _viewMatrix(1.0)
     , _normalMatrix(1.0)
+    , _cameraPos(0.0f, 0.0f, 5.0f)
 {
 }
 
@@ -211,6 +212,121 @@ HdCarWashRasterizer::Clear(GfVec4f const& clearColor, float clearDepth)
     std::fill(_framebuffer->normal.begin(), _framebuffer->normal.end(), GfVec3f(0.0f));
     std::fill(_framebuffer->objectId.begin(), _framebuffer->objectId.end(), -1);
     std::fill(_framebuffer->primId.begin(), _framebuffer->primId.end(), -1);
+}
+
+void
+HdCarWashRasterizer::ClearDepthOnly(float clearDepth)
+{
+    if (!_framebuffer) return;
+
+    // Preserve color buffer (AI result), only clear depth and auxiliary buffers
+    std::fill(_framebuffer->depth.begin(), _framebuffer->depth.end(), clearDepth);
+    std::fill(_framebuffer->normal.begin(), _framebuffer->normal.end(), GfVec3f(0.0f));
+    std::fill(_framebuffer->objectId.begin(), _framebuffer->objectId.end(), -1);
+    std::fill(_framebuffer->primId.begin(), _framebuffer->primId.end(), -1);
+}
+
+void
+HdCarWashRasterizer::SetLights(const std::vector<HdCarWashLightData>& lights)
+{
+    _lights = lights;
+    TF_DEBUG_MSG(HD_CARWASH, "Rasterizer: %zu lights set\n", _lights.size());
+}
+
+void
+HdCarWashRasterizer::ClearLights()
+{
+    _lights.clear();
+}
+
+void
+HdCarWashRasterizer::SetCameraPosition(GfVec3f const& cameraPos)
+{
+    _cameraPos = cameraPos;
+}
+
+GfVec4f
+HdCarWashRasterizer::ComputeShading(
+    GfVec3f const& worldNormal,
+    GfVec3f const& worldPos) const
+{
+    // Neutral gray base color (better for AI stylization)
+    GfVec3f baseColor(0.7f, 0.7f, 0.7f);
+
+    // Specular parameters (Blinn-Phong)
+    float specularPower = 32.0f;
+    float specularIntensity = 0.3f;
+    GfVec3f specularColor(1.0f, 1.0f, 1.0f);
+
+    // Ambient term
+    float ambient = 0.15f;
+    GfVec3f result = baseColor * ambient;
+    float specularAccum = 0.0f;
+
+    // View direction for specular
+    GfVec3f viewDir = (_cameraPos - worldPos).GetNormalized();
+
+    // If no lights, use default directional light
+    if (_lights.empty()) {
+        GfVec3f defaultLightDir = GfVec3f(0.5f, 0.5f, 0.7f).GetNormalized();
+        float NdotL = std::max(0.0f, GfDot(worldNormal, defaultLightDir));
+        result += baseColor * NdotL * 0.85f;
+
+        // Blinn-Phong specular
+        GfVec3f halfDir = (defaultLightDir + viewDir).GetNormalized();
+        float NdotH = std::max(0.0f, GfDot(worldNormal, halfDir));
+        specularAccum += std::pow(NdotH, specularPower);
+    } else {
+        // Accumulate contribution from all lights
+        for (const auto& light : _lights) {
+            if (!light.enabled) continue;
+
+            GfVec3f lightDir;
+            float attenuation = 1.0f;
+
+            if (light.type == HdPrimTypeTokens->distantLight ||
+                light.type == HdPrimTypeTokens->simpleLight) {
+                // Directional light - use light direction directly
+                lightDir = light.direction.GetNormalized();
+            } else {
+                // Point/sphere/rect light - compute direction from position
+                lightDir = (light.position - worldPos).GetNormalized();
+
+                // Distance attenuation (inverse square falloff)
+                float distance = (light.position - worldPos).GetLength();
+                if (distance > 0.001f) {
+                    attenuation = 1.0f / (1.0f + distance * distance * 0.1f);
+                }
+            }
+
+            // N dot L (diffuse)
+            float NdotL = std::max(0.0f, GfDot(worldNormal, lightDir));
+
+            // Accumulate diffuse light contribution
+            GfVec3f lightContrib = GfVec3f(
+                baseColor[0] * light.radiance[0],
+                baseColor[1] * light.radiance[1],
+                baseColor[2] * light.radiance[2]
+            ) * NdotL * attenuation;
+
+            result += lightContrib;
+
+            // Blinn-Phong specular
+            GfVec3f halfDir = (lightDir + viewDir).GetNormalized();
+            float NdotH = std::max(0.0f, GfDot(worldNormal, halfDir));
+            specularAccum += std::pow(NdotH, specularPower) * attenuation;
+        }
+    }
+
+    // Add specular contribution
+    result += specularColor * specularAccum * specularIntensity;
+
+    // Clamp to [0, 1]
+    result[0] = std::min(1.0f, result[0]);
+    result[1] = std::min(1.0f, result[1]);
+    result[2] = std::min(1.0f, result[2]);
+
+    return GfVec4f(result[0], result[1], result[2], 1.0f);
 }
 
 void
@@ -284,7 +400,7 @@ HdCarWashRasterizer::RasterizeMesh(HdCarWashMesh const* mesh)
             n2 = GfVec3f(static_cast<float>(n2w[0]), static_cast<float>(n2w[1]), static_cast<float>(n2w[2])).GetNormalized();
 
             // Transform and clip
-            TransformTriangle(p0, p1, p2, n0, n1, n2, mvp,
+            TransformTriangle(p0, p1, p2, n0, n1, n2, modelMatrix, mvp,
                               objectId, primId, triangles);
         }
 
@@ -304,10 +420,16 @@ bool
 HdCarWashRasterizer::TransformTriangle(
     GfVec3f const& p0, GfVec3f const& p1, GfVec3f const& p2,
     GfVec3f const& n0, GfVec3f const& n1, GfVec3f const& n2,
+    GfMatrix4d const& modelMatrix,
     GfMatrix4d const& mvp,
     int objectId, int primId,
     std::vector<ScreenTriangle>& outTriangles)
 {
+    // Compute world positions (for shading)
+    GfVec4d world0d = GfVec4d(p0[0], p0[1], p0[2], 1.0) * modelMatrix;
+    GfVec4d world1d = GfVec4d(p1[0], p1[1], p1[2], 1.0) * modelMatrix;
+    GfVec4d world2d = GfVec4d(p2[0], p2[1], p2[2], 1.0) * modelMatrix;
+
     // Transform to clip space using post-multiplication (USD row-vector convention)
     // USD uses row-major matrices with point * matrix order
     GfVec4d clip0d = GfVec4d(p0[0], p0[1], p0[2], 1.0) * mvp;
@@ -369,6 +491,15 @@ HdCarWashRasterizer::TransformTriangle(
     tri.screenPos[0] = ndcToScreen(ndc0);
     tri.screenPos[1] = ndcToScreen(ndc1);
     tri.screenPos[2] = ndcToScreen(ndc2);
+    tri.worldPos[0] = GfVec3f(static_cast<float>(world0d[0]),
+                               static_cast<float>(world0d[1]),
+                               static_cast<float>(world0d[2]));
+    tri.worldPos[1] = GfVec3f(static_cast<float>(world1d[0]),
+                               static_cast<float>(world1d[1]),
+                               static_cast<float>(world1d[2]));
+    tri.worldPos[2] = GfVec3f(static_cast<float>(world2d[0]),
+                               static_cast<float>(world2d[1]),
+                               static_cast<float>(world2d[2]));
     tri.worldNormal[0] = n0;
     tri.worldNormal[1] = n1;
     tri.worldNormal[2] = n2;
@@ -461,23 +592,18 @@ HdCarWashRasterizer::RasterizeTriangle(ScreenTriangle const& tri)
                               w2 * tri.worldNormal[2]).GetNormalized();
             _framebuffer->normal[pixelIdx] = normal;
 
+            // Interpolate world position
+            GfVec3f worldPos = w0 * tri.worldPos[0] +
+                               w1 * tri.worldPos[1] +
+                               w2 * tri.worldPos[2];
+
             // Write IDs
             _framebuffer->objectId[pixelIdx] = tri.objectId;
             _framebuffer->primId[pixelIdx] = tri.primId;
 
-            // Basic shading for color (simple N.L)
-            GfVec3f lightDir = GfVec3f(0.5f, 0.5f, 0.7f).GetNormalized();
-            float NdotL = std::max(0.0f, GfDot(normal, lightDir));
-            float ambient = 0.2f;
-            float shade = ambient + (1.0f - ambient) * NdotL;
-
-            // CarWash blue tint
-            _framebuffer->color[pixelIdx] = GfVec4f(
-                0.2f * shade,
-                0.6f * shade,
-                0.9f * shade,
-                1.0f
-            );
+            // Compute shading using scene lights (or fallback)
+            GfVec4f shadedColor = ComputeShading(normal, worldPos);
+            _framebuffer->color[pixelIdx] = shadedColor;
         }
     }
 }
