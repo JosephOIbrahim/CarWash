@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+    defaultPrim = "World"
+    doc = "Minimal CarWash headless render-test stage: one poly cube + a camera. See HEADLESS_RENDER.md."
+)
+
+def Xform "World"
+{
+    def Mesh "Cube"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [4,5,6,7,  1,0,3,2,  5,1,2,6,  0,4,7,3,  7,6,2,3,  0,1,5,4]
+        point3f[] points = [
+            (-1,-1,-1), (1,-1,-1), (1,1,-1), (-1,1,-1),
+            (-1,-1,1),  (1,-1,1),  (1,1,1),  (-1,1,1)
+        ]
+        color3f[] primvars:displayColor = [(0.8, 0.35, 0.2)]
+        double3 xformOp:rotateXYZ = (20, 35, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 35
+        float horizontalAperture = 36
+        float verticalAperture = 36
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 0, 6)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

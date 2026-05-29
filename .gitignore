@@ -25,3 +25,5 @@ C:/Temp/hdcarwash_debug.txt
 # Transient agent/build state
 .ralph-state.json
 *.log
+build_log*.txt
+*.dll.bak
