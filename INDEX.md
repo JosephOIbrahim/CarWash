@@ -1,6 +1,6 @@
-# hdCarWash - Project Index
+# HdCarWash - Project Index
 
-Houdini Hydra render delegate for AI-powered video generation via ComfyUI/LTX2.
+Houdini Hydra render delegate for AI-powered video generation via ComfyUI/LTX-2.
 
 **Repository:** https://github.com/JosephOIbrahim/hdCarWash (private)
 
@@ -14,32 +14,48 @@ Houdini (USD/Hydra) → hdCarWash Delegate → ComfyUI (WebSocket) → LTX2/Gemm
 
 ---
 
+## Naming Convention
+
+This repo uses three related names consistently:
+
+- **`HdCarWash`** — the project / repository / class-name prefix (C++ classes are `HdCarWash*`).
+- **`hdCarWash`** — the plugin library / source directory (`plugin/hdCarWash/`, built `hdCarWash.dll`).
+- **`CarWash`** — the user-facing renderer label that appears in Houdini's render-settings UI.
+
 ## Directory Structure
 
+Actual top-level layout of the repository as it exists today:
+
 ```
-HdCarWash/
+CARWASH/                       # Repository root
 ├── plugin/                    # Hydra render delegate (C++)
-│   ├── hdCarWash/            # Main plugin source
-│   │   ├── comfyClient.*     # ComfyUI WebSocket client
-│   │   ├── renderDelegate.*  # Hydra delegate implementation
-│   │   ├── renderPass.*      # Render pass logic
-│   │   ├── rasterizer.*      # CPU rasterizer for depth/control images
-│   │   ├── camera.*          # Camera handling
-│   │   ├── mesh.*            # Mesh processing
-│   │   ├── light.*           # Light handling
-│   │   ├── renderBuffer.*    # AOV buffer management
-│   │   └── tokens.*          # USD tokens
-│   ├── lib/                  # Built DLL output
-│   └── plugInfo.json         # Hydra plugin registration
-├── workflows/                 # ComfyUI workflow definitions
-├── automation/               # Build & test automation
-├── python/                   # Python utilities
-├── schema/                   # USD schema definitions
-├── comfyui/                  # ComfyUI custom nodes
-├── houdini/                  # Houdini-side Python scripts
-├── tests/                    # Test suite
-└── scripts/                  # Utility scripts
+│   ├── hdCarWash/             # Plugin source
+│   │   ├── api.h              # Export macros
+│   │   ├── camera.*           # USD camera → matrices
+│   │   ├── comfyClient.*      # ComfyUI WebSocket client / workflow builder
+│   │   ├── debugCodes.*       # TF_DEBUG codes
+│   │   ├── mesh.*             # USD mesh → triangles
+│   │   ├── rasterizer.*       # CPU depth/normal rasterizer + frame hashing
+│   │   ├── renderBuffer.*     # AOV buffer management
+│   │   ├── renderDelegate.*   # Hydra delegate implementation
+│   │   ├── renderPass.*       # Render pass logic
+│   │   ├── rendererPlugin.*   # Plugin registration
+│   │   ├── tokens.*           # USD/TfToken definitions
+│   │   └── CMakeLists.txt     # Plugin build configuration
+│   └── plugInfo.json          # Hydra plugin manifest
+├── automation/                # Python automation scripts (synapse_*, carwash_automation)
+├── branding/                  # Visual identity assets
+├── docs/                      # Project documentation
+├── test/                      # Manual render test (batch launcher + script)
+├── tests/                     # C++ test scaffold (tests/cpp/CMakeLists.txt)
+├── CMakeLists.txt             # Top-level build configuration
+├── rebuild_and_install.bat    # Windows rebuild + install helper
+├── README.md
+├── INDEX.md
+└── DETERMINISM_CROSS_REFERENCE.md
 ```
+
+> There is currently **no** `workflows/`, `python/`, `schema/`, `comfyui/`, `houdini/`, `scripts/`, or `plugin/lib/` directory, and no `download_models.ps1`. Items below marked **(planned — not yet in repo)** are design intent only.
 
 ---
 
@@ -47,85 +63,73 @@ HdCarWash/
 
 ### Plugin (C++ Hydra Delegate)
 
+All files below exist in the repository.
+
 | File | Purpose |
 |------|---------|
-| `plugin/hdCarWash/comfyClient.cpp` | ComfyUI WebSocket client, LTX2 workflow builder |
-| `plugin/hdCarWash/comfyClient.h` | ComfyUI client header |
-| `plugin/hdCarWash/renderDelegate.cpp` | Main Hydra delegate implementation |
-| `plugin/hdCarWash/renderDelegate.h` | Delegate header with render settings |
-| `plugin/hdCarWash/renderPass.cpp` | Render pass execution logic |
-| `plugin/hdCarWash/renderPass.h` | Render pass header |
-| `plugin/hdCarWash/rasterizer.cpp` | CPU depth/normal rasterizer |
-| `plugin/hdCarWash/rasterizer.h` | Rasterizer header |
-| `plugin/hdCarWash/camera.cpp` | USD camera → matrices |
-| `plugin/hdCarWash/mesh.cpp` | USD mesh → triangles |
-| `plugin/hdCarWash/light.cpp` | USD light handling |
-| `plugin/hdCarWash/renderBuffer.cpp` | AOV buffer management |
-| `plugin/hdCarWash/tokens.cpp` | USD token definitions |
-| `plugin/hdCarWash/debugCodes.cpp` | TF_DEBUG codes |
-| `plugin/hdCarWash/rendererPlugin.cpp` | Plugin registration |
 | `plugin/hdCarWash/api.h` | Export macros |
-| `plugin/hdCarWash/third_party/stb_image.h` | Image I/O |
+| `plugin/hdCarWash/camera.cpp` / `.h` | USD camera → matrices |
+| `plugin/hdCarWash/comfyClient.cpp` / `.h` | ComfyUI WebSocket client, workflow builder |
+| `plugin/hdCarWash/debugCodes.cpp` / `.h` | TF_DEBUG codes |
+| `plugin/hdCarWash/mesh.cpp` / `.h` | USD mesh → triangles |
+| `plugin/hdCarWash/rasterizer.cpp` / `.h` | CPU depth/normal rasterizer + frame hashing |
+| `plugin/hdCarWash/renderBuffer.cpp` / `.h` | AOV buffer management |
+| `plugin/hdCarWash/renderDelegate.cpp` / `.h` | Main Hydra delegate implementation |
+| `plugin/hdCarWash/renderPass.cpp` / `.h` | Render pass execution logic |
+| `plugin/hdCarWash/rendererPlugin.cpp` / `.h` | Plugin registration |
+| `plugin/hdCarWash/tokens.cpp` / `.h` | USD/TfToken definitions |
+| `plugin/hdCarWash/CMakeLists.txt` | Plugin build configuration |
 | `plugin/plugInfo.json` | Hydra plugin manifest |
-| `plugin/hdCarWash/CMakeLists.txt` | Build configuration |
-
-### ComfyUI Workflows
-
-| File | Purpose |
-|------|---------|
-| `workflows/carwash_ltx2_img2vid.json` | LTX2 image-to-video workflow |
-| `workflows/hdcarwash_sdxl_depth.json` | SDXL depth-conditioned workflow |
-| `workflows/carwash_animatediff_workflow.json` | AnimateDiff workflow |
-| `workflows/carwash_video_workflow.json` | General video workflow |
-| `workflows/test_workflow_api.json` | API format test workflow |
-
-### USD Schemas
-
-| File | Purpose |
-|------|---------|
-| `schema/carWashSchema.usda` | CarWash render settings schema |
-| `schema/carWashRenderSettingsAPI.usda` | Render settings API schema |
-| `schema/cognitiveSubstrate.usda` | Cognitive substrate integration |
-| `schema/generatedSchema.usda` | Generated schema output |
-
-### Python Utilities
-
-| File | Purpose |
-|------|---------|
-| `python/carwash_video_bridge.py` | Video bridge utilities |
-| `python/carwash_color.py` | Color processing |
-| `python/carwash_production.py` | Production helpers |
-| `python/carwash_test_suite.py` | Test suite runner |
-| `houdini/synapse_server.py` | Synapse WebSocket server |
 
 ### Automation Scripts
 
+All files below exist in `automation/`.
+
 | File | Purpose |
 |------|---------|
-| `automation/deploy_and_test.py` | Build, deploy, and test |
-| `automation/diagnose_carwash.py` | Diagnostic utilities |
-| `automation/check_comfyui_nodes.py` | Verify ComfyUI nodes |
-| `automation/quick_test.py` | Quick integration test |
-| `automation/quick_diagnostic.py` | Quick diagnostic |
-| `automation/synapse_*.py` | Synapse automation scripts |
-| `deploy_hdcarwash.py` | DLL deployment script |
-| `deploy.bat` | Windows deploy batch |
-| `setup_comfyui.bat` | ComfyUI setup |
-| `download_models.ps1` | Model download script |
-| `build_all_versions.py` | Multi-version build |
+| `automation/carwash_automation.py` | CarWash automation entry point |
+| `automation/synapse_discover.py` | Synapse discovery script |
+| `automation/synapse_execute.py` | Synapse execution script |
+| `automation/synapse_reload.py` | Synapse reload script |
+| `automation/synapse_run.py` | Synapse run script |
+| `automation/synapse_test.py` | Synapse test script |
 
 ### Tests
 
 | File | Purpose |
 |------|---------|
-| `tests/test_determinism.py` | Determinism verification |
-| `tests/test_comfyui_nodes.py` | ComfyUI node tests |
-| `tests/test_schema.py` | USD schema tests |
-| `test/test_carwash_render.py` | Render integration test |
+| `test/launch_carwash_test.bat` | Windows launcher for the manual render test |
+| `test/test_carwash_render.py` | Render test script |
+| `tests/cpp/CMakeLists.txt` | C++ test build scaffold |
+
+### Documentation
+
+| File | Purpose |
+|------|---------|
+| `docs/AGENT_OFFLOAD_PRD_TEMPLATE.md` | Agent-offload PRD template |
+| `branding/CARWASH_IDENTITY.md` | Visual identity / color palette |
+| `DETERMINISM_CROSS_REFERENCE.md` | Determinism design intent (forward-looking) |
+
+### Planned Artifacts (not yet in repo)
+
+The following were referenced by earlier drafts of this index but **do not currently exist**. They are listed here only as design intent.
+
+| Planned artifact | Intended purpose |
+|------------------|------------------|
+| `workflows/*.json` | ComfyUI workflow definitions (LTX-2, SDXL depth, AnimateDiff) |
+| `schema/*.usda` | USD render-settings / cognitive-substrate schemas |
+| `python/`, `houdini/` utilities | Video bridge, color, production, Synapse server helpers |
+| `comfyui/` custom nodes | ComfyUI-side integration nodes |
+| `download_models.ps1` | Model download helper |
+| `plugin/lib/hdCarWash.dll` | Built plugin output (produced by the build, not committed) |
+| pytest suites (`test_determinism.py`, `test_comfyui_nodes.py`, `test_schema.py`) | Automated test coverage |
 
 ---
 
-## Model Configuration (LTX2)
+## Model Configuration (LTX-2) — planned backend target
+
+> The LTX-2 / ComfyUI integration is **planned** (Phase 2). The delegate currently
+> registers backend settings (default `ltx2`) but does not yet submit workflows.
 
 ```
 UNET:         LTX2/ltx-2-19b-distilled-fp8_transformer_only.safetensors
@@ -166,21 +170,27 @@ Create `Documents/houdini21.0/packages/hdCarWash.json`:
 
 ### DLL Locations
 
-The DLL may need to be deployed to multiple locations:
-- `plugin/lib/hdCarWash.dll` (package path)
+After building, the resulting `hdCarWash.dll` may need to be deployed to one or more
+of the following (none of these paths are committed to the repo):
+- a `lib/` folder next to `plugInfo.json` on `PXR_PLUGINPATH_NAME`
 - `Documents/houdini21.0/dso/hdCarWash.dll` (user DSO)
-- `houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` (USD plugin path)
+- the USD plugin path expected by your Houdini install
+
+`rebuild_and_install.bat` at the repo root automates the rebuild + install step.
 
 ---
 
 ## Build
 
 ```bash
-cd HdCarWash
 mkdir build && cd build
 cmake .. -G "Visual Studio 17 2022" -A x64
 cmake --build . --config Release
 ```
+
+Run these from the repository root (the directory containing the top-level
+`CMakeLists.txt`). See `README.md` for the build invocation that pins
+`CMAKE_PREFIX_PATH` to your Houdini install.
 
 ---
 
@@ -203,7 +213,9 @@ cmake --build . --config Release
 
 ---
 
-## Related Files (External)
+## Related Files (External, machine-specific)
+
+These live outside the repository on the development workstation and are **not** part of the repo:
 
 | Path | Purpose |
 |------|---------|

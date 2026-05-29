@@ -18,6 +18,9 @@
 #include <cmath>
 #include <mutex>
 #include <ctime>
+#include <charconv>
+#include <cstdint>
+#include <cstdio>
 
 // stb_image for robust PNG decoding (handles compressed PNGs)
 // See: https://github.com/nothings/stb
@@ -89,7 +92,8 @@ std::string Base64Encode(const std::vector<uint8_t>& data) {
     return result;
 }
 
-std::vector<uint8_t> Base64Decode(const std::string& encoded) {
+// Retained for API/debug use; no live caller after DecodeColorImage removal.
+[[maybe_unused]] std::vector<uint8_t> Base64Decode(const std::string& encoded) {
     std::vector<uint8_t> result;
     int in_len = static_cast<int>(encoded.size());
     int i = 0;
@@ -159,6 +163,89 @@ std::string GenerateClientId() {
 
     return clientId;
 }
+
+// Parse a port from the substring after ':' in a host[:port][/path] token.
+// Never throws (unlike std::stoi): on a non-numeric/empty/garbage port it
+// returns the supplied fallback, so a malformed URL cannot crash the render
+// thread (#5). Any trailing '/path' or other non-digit tail is ignored.
+int ParsePort(const std::string& s, int fallback) {
+    // Skip leading whitespace, then take the leading run of digits only.
+    size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+    size_t start = i;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+    if (i == start) {
+        return fallback;  // no digits at all
+    }
+    int value = fallback;
+    auto res = std::from_chars(s.data() + start, s.data() + i, value);
+    if (res.ec != std::errc() || value < 1 || value > 65535) {
+        return fallback;
+    }
+    return value;
+}
+
+// Stable 64-bit FNV-1a hash over a string (used for content-derived cache keys).
+uint64_t Fnv1a64(const std::string& s) {
+    uint64_t h = 1469598103934665603ULL;  // FNV offset basis
+    for (unsigned char c : s) {
+        h ^= static_cast<uint64_t>(c);
+        h *= 1099511628211ULL;             // FNV-1a 64-bit prime (0x100000001b3)
+    }
+    return h;
+}
+
+// Content-derived cache key: same scene + same params -> same key, so
+// deterministic mode never re-renders identical work yet distinct work still
+// gets distinct keys. Replaces the wall-clock cache-buster (#3b).
+std::string DeterministicCacheKey(const HdCarWashStyleParams& params,
+                                  unsigned int width, unsigned int height,
+                                  const char* backend) {
+    std::ostringstream oss;
+    // hexfloat gives an exact, lossless textual form for the float params, so two
+    // renders differing beyond default ~6 sig-figs (e.g. guidanceScale 7.5000001
+    // vs 7.5) no longer collide to the same cache key and serve a stale render.
+    oss << std::hexfloat;
+    oss << params.prompt << '|' << params.negativePrompt << '|'
+        << params.seed << '|' << params.inferenceSteps << '|'
+        << params.guidanceScale << '|' << params.controlNetStrength << '|'
+        << params.normalControlNetStrength << '|'
+        << params.useDepthControl << params.useNormalControl << params.useEdgeControl << '|'
+        << width << 'x' << height << '|' << (backend ? backend : "");
+    char buf[17];
+    auto h = Fnv1a64(oss.str());
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(h));
+    return std::string(buf);
+}
+
+// Debug log sink (#5/F): replaces the unconditional per-frame writes to the
+// hardcoded C:/Temp/hdcarwash_debug.txt path. Only opens the file (and only
+// emits the workflow JSON) when TF_DEBUG(HD_CARWASH) is enabled, removing the
+// hot-path I/O, the hardcoded path, and the workflow-JSON leak from default
+// runs. Drop-in for the previous `std::ofstream debugLog(...)` usage.
+class _DebugLog {
+public:
+    _DebugLog() {
+        if (TfDebug::IsEnabled(HD_CARWASH)) {
+            _out.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+        }
+    }
+    template <typename T>
+    _DebugLog& operator<<(const T& v) {
+        if (_out.is_open()) _out << v;
+        return *this;
+    }
+    // Support stream manipulators such as std::endl.
+    _DebugLog& operator<<(std::ostream& (*manip)(std::ostream&)) {
+        if (_out.is_open()) _out << manip;
+        return *this;
+    }
+    void close() {
+        if (_out.is_open()) _out.close();
+    }
+private:
+    std::ofstream _out;
+};
 
 }  // anonymous namespace
 
@@ -357,6 +444,10 @@ HdCarWashComfyClient::ProcessFrame(
     HdCarWashRenderResult result;
     auto startTime = std::chrono::high_resolution_clock::now();
 
+    // Reset cancellation state for this run so a prior CancelPending() does not
+    // permanently disable the client (#5).
+    _cancelRequested = false;
+
     TF_DEBUG_MSG(HD_CARWASH, "ProcessFrame: %dx%d, prompt='%s'\n",
                  framebuffer.width, framebuffer.height, params.prompt.c_str());
 
@@ -453,7 +544,11 @@ HdCarWashComfyClient::EncodeDepthBuffer(
     float range = maxDepth - minDepth;
     if (range < 0.001f) range = 1.0f;
 
-    for (size_t i = 0; i < depth.size(); i++) {
+    // Guard against caller-supplied vectors that do not match the requested
+    // dimensions: never write past the allocation (heap overflow) (#4b).
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    const size_t count = std::min(depth.size(), pixelCount);
+    for (size_t i = 0; i < count; i++) {
         float d = depth[i];
         if (d >= 1.0f) {
             pixels[i] = 255;  // Background = white (far)
@@ -476,7 +571,11 @@ HdCarWashComfyClient::EncodeNormalBuffer(
     // Convert normals to RGB PNG (standard normal map encoding)
     std::vector<uint8_t> pixels(width * height * 3);
 
-    for (size_t i = 0; i < normals.size(); i++) {
+    // Guard against caller-supplied vectors that do not match the requested
+    // dimensions: never write past the allocation (heap overflow) (#4b).
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    const size_t count = std::min(normals.size(), pixelCount);
+    for (size_t i = 0; i < count; i++) {
         const GfVec3f& n = normals[i];
         // Normal map encoding: [-1,1] -> [0,255]
         pixels[i * 3 + 0] = static_cast<uint8_t>((n[0] * 0.5f + 0.5f) * 255.0f);
@@ -496,7 +595,11 @@ HdCarWashComfyClient::EncodeColorBuffer(
     // Convert color to RGBA PNG
     std::vector<uint8_t> pixels(width * height * 4);
 
-    for (size_t i = 0; i < color.size(); i++) {
+    // Guard against caller-supplied vectors that do not match the requested
+    // dimensions: never write past the allocation (heap overflow) (#4b).
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    const size_t count = std::min(color.size(), pixelCount);
+    for (size_t i = 0; i < count; i++) {
         const GfVec4f& c = color[i];
         pixels[i * 4 + 0] = static_cast<uint8_t>(std::clamp(c[0], 0.0f, 1.0f) * 255.0f);
         pixels[i * 4 + 1] = static_cast<uint8_t>(std::clamp(c[1], 0.0f, 1.0f) * 255.0f);
@@ -531,7 +634,11 @@ HdCarWashComfyClient::EncodeIdBuffer(
     };
     constexpr int paletteSize = sizeof(palette) / sizeof(palette[0]);
 
-    for (size_t i = 0; i < ids.size(); i++) {
+    // Guard against caller-supplied vectors that do not match the requested
+    // dimensions: never write past the allocation (heap overflow) (#4b).
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    const size_t count = std::min(ids.size(), pixelCount);
+    for (size_t i = 0; i < count; i++) {
         int id = ids[i];
         int colorIdx = (id < 0) ? 0 : ((id + 1) % paletteSize);
         pixels[i * 3 + 0] = palette[colorIdx][0];
@@ -543,172 +650,6 @@ HdCarWashComfyClient::EncodeIdBuffer(
     return Base64Encode(png);
 }
 
-std::vector<GfVec4f>
-HdCarWashComfyClient::DecodeColorImage(
-    const std::string& base64Png,
-    unsigned int& outWidth, unsigned int& outHeight)
-{
-    // DEPRECATED: This function only handles uncompressed PNGs.
-    // Use stb_image directly (as _DownloadResult does) for full PNG support.
-    // Kept for API compatibility.
-
-    // Decode base64 to PNG bytes
-    std::vector<uint8_t> pngData = Base64Decode(base64Png);
-    if (pngData.size() < 24) {
-        TF_WARN("PNG data too small");
-        return {};
-    }
-
-    // Verify PNG signature
-    const uint8_t pngSig[] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
-    if (memcmp(pngData.data(), pngSig, 8) != 0) {
-        TF_WARN("Invalid PNG signature");
-        return {};
-    }
-
-    // Parse IHDR chunk (starts at offset 8)
-    // Chunk: length(4) + type(4) + data + crc(4)
-    size_t pos = 8;
-    uint32_t ihdrLen = (pngData[pos] << 24) | (pngData[pos+1] << 16) |
-                       (pngData[pos+2] << 8) | pngData[pos+3];
-    pos += 4;
-
-    // Verify IHDR type
-    if (pngData[pos] != 'I' || pngData[pos+1] != 'H' ||
-        pngData[pos+2] != 'D' || pngData[pos+3] != 'R') {
-        TF_WARN("First chunk is not IHDR");
-        return {};
-    }
-    pos += 4;
-
-    // Read dimensions
-    outWidth = (pngData[pos] << 24) | (pngData[pos+1] << 16) |
-               (pngData[pos+2] << 8) | pngData[pos+3];
-    pos += 4;
-    outHeight = (pngData[pos] << 24) | (pngData[pos+1] << 16) |
-                (pngData[pos+2] << 8) | pngData[pos+3];
-    pos += 4;
-
-    uint8_t bitDepth = pngData[pos++];
-    uint8_t colorType = pngData[pos++];
-
-    TF_DEBUG_MSG(HD_CARWASH, "PNG: %dx%d, depth=%d, colorType=%d\n",
-                 outWidth, outHeight, bitDepth, colorType);
-
-    // Skip rest of IHDR + CRC
-    pos = 8 + 4 + 4 + ihdrLen + 4;
-
-    // Collect all IDAT chunks
-    std::vector<uint8_t> compressedData;
-    while (pos + 8 < pngData.size()) {
-        uint32_t chunkLen = (pngData[pos] << 24) | (pngData[pos+1] << 16) |
-                            (pngData[pos+2] << 8) | pngData[pos+3];
-        pos += 4;
-
-        char chunkType[5] = {
-            static_cast<char>(pngData[pos]),
-            static_cast<char>(pngData[pos+1]),
-            static_cast<char>(pngData[pos+2]),
-            static_cast<char>(pngData[pos+3]),
-            '\0'
-        };
-        pos += 4;
-
-        if (strcmp(chunkType, "IDAT") == 0) {
-            compressedData.insert(compressedData.end(),
-                                  pngData.begin() + pos,
-                                  pngData.begin() + pos + chunkLen);
-        } else if (strcmp(chunkType, "IEND") == 0) {
-            break;
-        }
-
-        pos += chunkLen + 4;  // Skip data + CRC
-    }
-
-    if (compressedData.empty()) {
-        TF_WARN("No IDAT chunks found");
-        return {};
-    }
-
-    // Decompress using simple inflate (zlib format)
-    // Skip zlib header (2 bytes) and decompress
-    std::vector<uint8_t> rawData;
-
-    // Simple inflate for uncompressed blocks (BTYPE=00)
-    // For production, should use proper zlib library
-    size_t cPos = 2;  // Skip zlib header
-    while (cPos < compressedData.size() - 4) {  // -4 for adler32
-        uint8_t header = compressedData[cPos++];
-        bool bfinal = header & 0x01;
-        uint8_t btype = (header >> 1) & 0x03;
-
-        if (btype == 0) {
-            // Uncompressed block
-            uint16_t len = compressedData[cPos] | (compressedData[cPos+1] << 8);
-            cPos += 4;  // len + nlen
-            rawData.insert(rawData.end(),
-                          compressedData.begin() + cPos,
-                          compressedData.begin() + cPos + len);
-            cPos += len;
-        } else {
-            // Compressed blocks - need proper inflate
-            // For now, return empty and log warning
-            TF_WARN("PNG uses compressed data (btype=%d), full inflate not implemented", btype);
-            TF_WARN("Consider using a simpler approach or adding zlib dependency");
-            return {};
-        }
-
-        if (bfinal) break;
-    }
-
-    // Determine channels from color type
-    int channels = 4;  // Default RGBA
-    if (colorType == 0) channels = 1;       // Grayscale
-    else if (colorType == 2) channels = 3;  // RGB
-    else if (colorType == 4) channels = 2;  // Grayscale+Alpha
-    else if (colorType == 6) channels = 4;  // RGBA
-
-    // Remove filter bytes and reconstruct image
-    size_t rowBytes = outWidth * channels + 1;  // +1 for filter byte
-    if (rawData.size() < rowBytes * outHeight) {
-        TF_WARN("Insufficient decompressed data: %zu < %zu",
-                rawData.size(), rowBytes * outHeight);
-        return {};
-    }
-
-    std::vector<GfVec4f> result(outWidth * outHeight);
-
-    for (unsigned int y = 0; y < outHeight; y++) {
-        uint8_t filter = rawData[y * rowBytes];
-        // For now, only support filter type 0 (none)
-        if (filter != 0) {
-            TF_DEBUG_MSG(HD_CARWASH, "PNG filter type %d not fully supported\n", filter);
-        }
-
-        for (unsigned int x = 0; x < outWidth; x++) {
-            size_t srcIdx = y * rowBytes + 1 + x * channels;
-            float r = 0, g = 0, b = 0, a = 1.0f;
-
-            if (channels == 4) {
-                r = rawData[srcIdx] / 255.0f;
-                g = rawData[srcIdx + 1] / 255.0f;
-                b = rawData[srcIdx + 2] / 255.0f;
-                a = rawData[srcIdx + 3] / 255.0f;
-            } else if (channels == 3) {
-                r = rawData[srcIdx] / 255.0f;
-                g = rawData[srcIdx + 1] / 255.0f;
-                b = rawData[srcIdx + 2] / 255.0f;
-            } else if (channels == 1) {
-                r = g = b = rawData[srcIdx] / 255.0f;
-            }
-
-            result[y * outWidth + x] = GfVec4f(r, g, b, a);
-        }
-    }
-
-    return result;
-}
-
 // =============================================================================
 // Private Methods
 // =============================================================================
@@ -718,10 +659,17 @@ HdCarWashComfyClient::_BuildWorkflow(
     const HdCarWashFramebuffer& framebuffer,
     const HdCarWashStyleParams& params)
 {
-    // Generate unique cache-buster to prevent ComfyUI from skipping execution
+    // Cache key + seed (#3b): in deterministic mode (the default) derive both
+    // from scene content so the same scene + same seed reproduces exactly. Only
+    // the explicit non-deterministic / force-re-render path uses wall-clock time.
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    std::string cacheBuster = std::to_string(ms);
+    std::string cacheBuster = _deterministic
+        ? DeterministicCacheKey(params, framebuffer.width, framebuffer.height, _backend.GetText())
+        : std::to_string(ms);
+    long long seedValue = _deterministic
+        ? params.seed
+        : (params.seed + ms % 1000000);
 
     // Escape special characters in prompts for JSON
     auto escapeJson = [](const std::string& s) {
@@ -824,7 +772,7 @@ HdCarWashComfyClient::_BuildWorkflow(
     json << "        \"positive\": [\"2\", 0],\n";
     json << "        \"negative\": [\"3\", 0],\n";
     json << "        \"latent_image\": [\"4\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";  // Vary seed to prevent caching
+    json << "        \"seed\": " << seedValue << ",\n";
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -862,12 +810,21 @@ HdCarWashComfyClient::_SaveControlImages(
     const HdCarWashFramebuffer& framebuffer,
     const HdCarWashStyleParams& params)
 {
-    // Create unique subfolder for this frame
-    auto now = std::chrono::system_clock::now();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    std::string subfolder = "hdcarwash_ctrl_" + std::to_string(ms % 1000000);
+    // Subfolder for this frame's control images. Deterministic mode derives a
+    // content-stable name so the same scene reuses the same uploads (#3b);
+    // non-deterministic mode keeps a wall-clock-unique name.
+    std::string subfolder;
+    if (_deterministic) {
+        subfolder = "hdcarwash_ctrl_" +
+            DeterministicCacheKey(params, framebuffer.width, framebuffer.height,
+                                  _backend.GetText());
+    } else {
+        auto now = std::chrono::system_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        subfolder = "hdcarwash_ctrl_" + std::to_string(ms % 1000000);
+    }
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[_SaveControlImages] Uploading to ComfyUI subfolder: " << subfolder << std::endl;
 
     bool success = true;
@@ -954,9 +911,16 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     const HdCarWashStyleParams& params,
     const std::string& controlImageSubfolder)
 {
+    // Cache key + seed (#3b): deterministic by default, wall-clock only on the
+    // explicit non-deterministic / force-re-render path.
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    std::string cacheBuster = std::to_string(ms);
+    std::string cacheBuster = _deterministic
+        ? DeterministicCacheKey(params, framebuffer.width, framebuffer.height, _backend.GetText())
+        : std::to_string(ms);
+    long long seedValue = _deterministic
+        ? params.seed
+        : (params.seed + ms % 1000000);
 
     auto escapeJson = [](const std::string& s) {
         std::string result;
@@ -976,7 +940,7 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     std::string positivePrompt = escapeJson(params.prompt);
     std::string negativePrompt = escapeJson(params.negativePrompt);
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[_BuildWorkflowControlNet] Building ControlNet workflow" << std::endl;
     debugLog << "  useDepthControl: " << params.useDepthControl << std::endl;
     debugLog << "  useNormalControl: " << params.useNormalControl << std::endl;
@@ -1121,7 +1085,7 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     json << "        \"positive\": [\"" << finalPositive << "\", 0],\n";
     json << "        \"negative\": [\"" << finalNegative << "\", 1],\n";
     json << "        \"latent_image\": [\"" << latentNode << "\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";
+    json << "        \"seed\": " << seedValue << ",\n";
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -1175,14 +1139,21 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
                  framebuffer.width, framebuffer.height);
 
     // Also write to debug log file
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "\n[_BuildWorkflowLTX2] ENTERED - Building LTX2 workflow" << std::endl;
     debugLog << "[_BuildWorkflowLTX2] controlImageSubfolder: " << controlImageSubfolder << std::endl;
     debugLog << "[_BuildWorkflowLTX2] framebuffer: " << framebuffer.width << "x" << framebuffer.height << std::endl;
 
+    // Cache key + seed (#3b): deterministic by default, wall-clock only on the
+    // explicit non-deterministic / force-re-render path.
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    std::string cacheBuster = std::to_string(ms);
+    std::string cacheBuster = _deterministic
+        ? DeterministicCacheKey(params, framebuffer.width, framebuffer.height, _backend.GetText())
+        : std::to_string(ms);
+    long long seedValue = _deterministic
+        ? params.seed
+        : (params.seed + ms % 1000000);
 
     auto escapeJson = [](const std::string& s) {
         std::string result;
@@ -1351,7 +1322,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"RandomNoise\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"noise_seed\": " << (params.seed + ms % 1000000) << "\n";
+    json << "        \"noise_seed\": " << seedValue << "\n";
     json << "      }\n";
     json << "    },\n";
     int noiseNode = nodeId++;
@@ -1401,7 +1372,7 @@ std::string
 HdCarWashComfyClient::_SubmitWorkflow(const std::string& workflowJson)
 {
     // DEBUG: Log workflow submission
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[_SubmitWorkflow] Workflow JSON size: " << workflowJson.size() << " bytes" << std::endl;
     if (workflowJson.size() < 2000) {
         debugLog << "[_SubmitWorkflow] Workflow: " << workflowJson << std::endl;
@@ -1511,7 +1482,7 @@ HdCarWashComfyClient::_DownloadResult(
     unsigned int& width, unsigned int& height)
 {
     // DEBUG: Write to file for diagnosis
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[_DownloadResult] promptId: " << promptId << std::endl;
 
     // Get output info from history
@@ -1687,7 +1658,7 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     // Extract port if present
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        port = ParsePort(host.substr(colonPos + 1), port);
         host = host.substr(0, colonPos);
     }
 
@@ -1696,6 +1667,14 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     if (sock == INVALID_SOCKET) {
         return "";
     }
+
+    // Bound recv/send so an accept-then-stall server cannot block us forever (#5).
+    // Windows expects a DWORD millisecond timeout for SO_RCVTIMEO/SO_SNDTIMEO.
+    DWORD sockTimeoutMs = 30000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
 
     // Resolve hostname
     struct addrinfo hints = {}, *result = nullptr;
@@ -1763,7 +1742,7 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
 
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        port = ParsePort(host.substr(colonPos + 1), port);
         host = host.substr(0, colonPos);
     }
 
@@ -1771,6 +1750,14 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
     if (sock == INVALID_SOCKET) {
         return "";
     }
+
+    // Bound recv/send so an accept-then-stall server cannot block us forever (#5).
+    // Windows expects a DWORD millisecond timeout for SO_RCVTIMEO/SO_SNDTIMEO.
+    DWORD sockTimeoutMs = 30000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
 
     struct addrinfo hints = {}, *result = nullptr;
     hints.ai_family = AF_INET;
@@ -1842,7 +1829,7 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
 
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        port = ParsePort(host.substr(colonPos + 1), port);
         host = host.substr(0, colonPos);
     }
 
@@ -1850,6 +1837,14 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
     if (sock == INVALID_SOCKET) {
         return "";
     }
+
+    // Bound recv/send so an accept-then-stall server cannot block us forever (#5).
+    // Windows expects a DWORD millisecond timeout for SO_RCVTIMEO/SO_SNDTIMEO.
+    DWORD sockTimeoutMs = 30000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char*>(&sockTimeoutMs), sizeof(sockTimeoutMs));
 
     struct addrinfo hints = {}, *result = nullptr;
     hints.ai_family = AF_INET;
@@ -1975,7 +1970,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     // Extract port
     size_t colonPos = url.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(url.substr(colonPos + 1));
+        port = ParsePort(url.substr(colonPos + 1), port);
         host = url.substr(0, colonPos);
     } else {
         host = url;
@@ -1984,7 +1979,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     // Add client_id to path
     std::string fullPath = path + "?clientId=" + _clientId;
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[WebSocket] Connecting to " << host << ":" << port << fullPath << std::endl;
 
     // Create socket
@@ -2064,6 +2059,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     ioctlsocket(sock, FIONBIO, &mode);
 
     _wsSocket = reinterpret_cast<void*>(sock);
+    _wsStop = false;  // clear any stop flag from a prior disconnect
     _wsConnected = true;
 
     debugLog << "[WebSocket] Connected successfully" << std::endl;
@@ -2083,12 +2079,25 @@ HdCarWashComfyClient::_WebSocketDisconnect()
 #ifdef _WIN32
     std::lock_guard<std::mutex> lock(_wsMutex);
 
+    // Signal the receive loop to stop and mark the connection down BEFORE we
+    // close the socket, so a thread parked in _WebSocketReceive() observes the
+    // stop and exits its select()/recv() promptly (#4b).
+    _wsStop = true;
+    _wsConnected = false;
+
+    // Wait until no thread is inside select()/recv() before closing the handle,
+    // eliminating the use-after-close race. The receive loop uses a bounded
+    // select timeout, so this clears quickly; cap the wait defensively. We do
+    // not take any lock the receive path needs, so this cannot deadlock.
+    for (int i = 0; i < 400 && _wsReceiving.load() > 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
     if (_wsSocket) {
         SOCKET sock = reinterpret_cast<SOCKET>(_wsSocket);
         closesocket(sock);
         _wsSocket = nullptr;
     }
-    _wsConnected = false;
 #endif
 }
 
@@ -2146,105 +2155,126 @@ std::string
 HdCarWashComfyClient::_WebSocketReceive(int timeoutMs)
 {
 #ifdef _WIN32
-    if (!_wsConnected || !_wsSocket) {
+    // Mark this thread as actively reading the socket. _WebSocketDisconnect()
+    // sets _wsStop and waits for this flag to clear before closesocket(), which
+    // guarantees no thread is parked in select()/recv() on _wsSocket when the
+    // handle is closed (fixes the use-after-close race, #4b). This deliberately
+    // does NOT take _wsMutex: disconnect holds _wsMutex while waiting on this
+    // atomic, so taking it here would deadlock.
+    // Refcount, not a single flag: if ProcessFrame is ever multi-flight on a
+    // kept-open connection, every active receiver is counted so disconnect waits
+    // for ALL of them to leave recv() before closesocket() (no use-after-close).
+    _wsReceiving.fetch_add(1);
+    struct ReceivingGuard {
+        std::atomic<int>& flag;
+        ~ReceivingGuard() { flag.fetch_sub(1); }
+    } receivingGuard{_wsReceiving};
+
+    if (_wsStop || !_wsConnected || !_wsSocket) {
         return "";
     }
 
     SOCKET sock = reinterpret_cast<SOCKET>(_wsSocket);
 
-    // Use select for timeout
-    fd_set readSet;
-    FD_ZERO(&readSet);
-    FD_SET(sock, &readSet);
-
-    struct timeval tv;
-    tv.tv_sec = timeoutMs / 1000;
-    tv.tv_usec = (timeoutMs % 1000) * 1000;
-
-    int selectResult = select(0, &readSet, nullptr, nullptr, &tv);
-    if (selectResult <= 0) {
-        return "";  // Timeout or error
-    }
-
-    // Read WebSocket frame header
-    uint8_t header[2];
-    int received = recv(sock, reinterpret_cast<char*>(header), 2, 0);
-    if (received != 2) {
-        _wsConnected = false;
-        return "";
-    }
-
-    // Parse header
-    bool fin = (header[0] & 0x80) != 0;
-    uint8_t opcode = header[0] & 0x0F;
-    bool masked = (header[1] & 0x80) != 0;
-    uint64_t payloadLen = header[1] & 0x7F;
-
-    // Extended payload length
-    if (payloadLen == 126) {
-        uint8_t extLen[2];
-        if (recv(sock, reinterpret_cast<char*>(extLen), 2, 0) != 2) {
+    // Loop so control frames (ping/pong) are handled without recursion (#H).
+    while (true) {
+        if (_wsStop || !_wsConnected) {
             return "";
         }
-        payloadLen = (extLen[0] << 8) | extLen[1];
-    } else if (payloadLen == 127) {
-        uint8_t extLen[8];
-        if (recv(sock, reinterpret_cast<char*>(extLen), 8, 0) != 8) {
+
+        // Use select for timeout
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(sock, &readSet);
+
+        struct timeval tv;
+        tv.tv_sec = timeoutMs / 1000;
+        tv.tv_usec = (timeoutMs % 1000) * 1000;
+
+        int selectResult = select(0, &readSet, nullptr, nullptr, &tv);
+        if (selectResult <= 0) {
+            return "";  // Timeout or error
+        }
+
+        // Read WebSocket frame header
+        uint8_t header[2];
+        int received = recv(sock, reinterpret_cast<char*>(header), 2, 0);
+        if (received != 2) {
+            _wsConnected = false;
             return "";
         }
-        payloadLen = 0;
-        for (int i = 0; i < 8; i++) {
-            payloadLen = (payloadLen << 8) | extLen[i];
-        }
-    }
 
-    // Masking key (server frames are typically not masked)
-    uint8_t mask[4] = {0, 0, 0, 0};
-    if (masked) {
-        if (recv(sock, reinterpret_cast<char*>(mask), 4, 0) != 4) {
+        // Parse header
+        uint8_t opcode = header[0] & 0x0F;
+        bool masked = (header[1] & 0x80) != 0;
+        uint64_t payloadLen = header[1] & 0x7F;
+
+        // Extended payload length
+        if (payloadLen == 126) {
+            uint8_t extLen[2];
+            if (recv(sock, reinterpret_cast<char*>(extLen), 2, 0) != 2) {
+                return "";
+            }
+            payloadLen = (extLen[0] << 8) | extLen[1];
+        } else if (payloadLen == 127) {
+            uint8_t extLen[8];
+            if (recv(sock, reinterpret_cast<char*>(extLen), 8, 0) != 8) {
+                return "";
+            }
+            payloadLen = 0;
+            for (int i = 0; i < 8; i++) {
+                payloadLen = (payloadLen << 8) | extLen[i];
+            }
+        }
+
+        // Masking key (server frames are typically not masked)
+        uint8_t mask[4] = {0, 0, 0, 0};
+        if (masked) {
+            if (recv(sock, reinterpret_cast<char*>(mask), 4, 0) != 4) {
+                return "";
+            }
+        }
+
+        // Payload (limit to reasonable size)
+        if (payloadLen > 1024 * 1024) {
             return "";
         }
-    }
 
-    // Payload (limit to reasonable size)
-    if (payloadLen > 1024 * 1024) {
-        return "";
-    }
+        std::string payload(payloadLen, '\0');
+        size_t totalReceived = 0;
+        while (totalReceived < payloadLen) {
+            int chunk = recv(sock, &payload[totalReceived],
+                            static_cast<int>(payloadLen - totalReceived), 0);
+            if (chunk <= 0) {
+                return "";
+            }
+            totalReceived += chunk;
+        }
 
-    std::string payload(payloadLen, '\0');
-    size_t totalReceived = 0;
-    while (totalReceived < payloadLen) {
-        int chunk = recv(sock, &payload[totalReceived],
-                        static_cast<int>(payloadLen - totalReceived), 0);
-        if (chunk <= 0) {
+        // Unmask if needed
+        if (masked) {
+            for (size_t i = 0; i < payload.size(); i++) {
+                payload[i] ^= mask[i % 4];
+            }
+        }
+
+        // Handle different opcodes
+        if (opcode == 0x08) {
+            // Close frame
+            _wsConnected = false;
             return "";
+        } else if (opcode == 0x09) {
+            // Ping - respond with pong, then keep receiving (loop).
+            std::vector<uint8_t> pong = {0x8A, 0x00};  // Pong, no payload
+            send(sock, reinterpret_cast<const char*>(pong.data()), 2, 0);
+            continue;
+        } else if (opcode == 0x0A) {
+            // Pong - ignore, keep receiving (loop).
+            continue;
         }
-        totalReceived += chunk;
-    }
 
-    // Unmask if needed
-    if (masked) {
-        for (size_t i = 0; i < payload.size(); i++) {
-            payload[i] ^= mask[i % 4];
-        }
+        return payload;
     }
-
-    // Handle different opcodes
-    if (opcode == 0x08) {
-        // Close frame
-        _wsConnected = false;
-        return "";
-    } else if (opcode == 0x09) {
-        // Ping - respond with pong
-        std::vector<uint8_t> pong = {0x8A, 0x00};  // Pong, no payload
-        send(sock, reinterpret_cast<const char*>(pong.data()), 2, 0);
-        return _WebSocketReceive(timeoutMs);  // Continue receiving
-    } else if (opcode == 0x0A) {
-        // Pong - ignore
-        return _WebSocketReceive(timeoutMs);
-    }
-
-    return payload;
 #else
     return "";
 #endif
@@ -2253,7 +2283,7 @@ HdCarWashComfyClient::_WebSocketReceive(int timeoutMs)
 bool
 HdCarWashComfyClient::_WaitForCompletionWebSocket(const std::string& promptId, float timeoutSeconds)
 {
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    _DebugLog debugLog;
     debugLog << "[WebSocket] Waiting for completion of prompt: " << promptId << std::endl;
 
     // Connect to WebSocket

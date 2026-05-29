@@ -45,16 +45,15 @@ if(FALSE)  # Enable as phases complete
     )
 endif()
 
-# Phase 2+ sources (ComfyUI integration)
-if(FALSE)
-    list(APPEND HDCARWASH_SOURCES
-        comfyuiClient.cpp
-        httpClient.cpp
-    )
-    list(APPEND HDCARWASH_HEADERS
-        comfyuiClient.h
-        httpClient.h
-    )
+# Phase 2+ sources (ComfyUI integration). comfyClient.{cpp,h} exist on disk and
+# are hardened, but are NOT yet wired into the render pass (_Execute), so they are
+# excluded from the default build. Flip HDCARWASH_ENABLE_COMFYUI to ON once the
+# client is instantiated in renderDelegate/renderPass. comfyClient.cpp uses Winsock,
+# so it also requires linking ws2_32 (handled below when enabled).
+option(HDCARWASH_ENABLE_COMFYUI "Compile the ComfyUI client (comfyClient.cpp)" OFF)
+if(HDCARWASH_ENABLE_COMFYUI)
+    list(APPEND HDCARWASH_SOURCES comfyClient.cpp)
+    list(APPEND HDCARWASH_HEADERS comfyClient.h)
 endif()
 
 # Phase 3+ sources (Cognitive Engine)
@@ -104,6 +103,12 @@ target_link_libraries(hdCarWash
         HoudiniThirdParty
 )
 
+# comfyClient.cpp uses Winsock (WSAStartup/socket/select/recv); link ws2_32 only
+# when the ComfyUI client is compiled in.
+if(HDCARWASH_ENABLE_COMFYUI AND WIN32)
+    target_link_libraries(hdCarWash PRIVATE ws2_32)
+endif()
+
 # ==============================================================================
 # Compile Definitions
 # ==============================================================================
@@ -120,10 +125,14 @@ target_compile_definitions(hdCarWash
 # Installation
 # ==============================================================================
 
+# The dll lands at usd/hdCarWash/lib/hdCarWash.dll so that plugInfo.json's
+# LibraryPath ("lib/hdCarWash.dll", resolved relative to the manifest dir
+# usd/hdCarWash) points at the actual binary. On Windows a SHARED library is
+# a RUNTIME artifact (.dll); LIBRARY covers the import .lib on other configs.
 install(
     TARGETS hdCarWash
-    LIBRARY DESTINATION plugin/usd/hdCarWash/lib
-    RUNTIME DESTINATION plugin/usd/hdCarWash/lib
+    RUNTIME DESTINATION usd/hdCarWash/lib
+    LIBRARY DESTINATION usd/hdCarWash/lib
 )
 
 install(

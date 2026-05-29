@@ -15,10 +15,14 @@
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/rprim.h"
 #include "pxr/imaging/hd/aov.h"
+#include "pxr/imaging/hd/types.h"   // HdFormat, HdDataSizeOfFormat, HdGetComponent*
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/gf/vec4f.h"
+#include "pxr/base/gf/half.h"       // GfHalf for Float16 conversion
 
-#include <algorithm>  // std::sort for deterministic mesh ordering
+#include <algorithm>  // std::sort for deterministic mesh ordering, std::min/max
+#include <cstdint>    // uint8_t, int32_t
+#include <cmath>      // std::lround
 #include <fstream>    // Debug file logging
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -180,8 +184,10 @@ HdCarWashRenderPass::_ExecutePhase1(
     debugLog << "Meshes rasterized: " << meshCount << std::endl;
     TF_DEBUG_MSG(HD_CARWASH, "Rasterized %d meshes\n", meshCount);
 
-    // Compute determinism hash
-    HdCarWashFrameHash frameHash = _framebuffer.ComputeHash(16);  // Sample every 16th pixel
+    // Compute determinism hash. Use the authoritative full-buffer hash: this is
+    // the value the "VERIFIED" determinism claim rests on, so it must cover every
+    // pixel (the sampled ComputeHash(N>1) preview can miss 5th-decimal drift).
+    HdCarWashFrameHash frameHash = _framebuffer.ComputeAuthoritativeHash();
     debugLog << "FrameHash: 0x" << std::hex << frameHash.combined << std::dec
              << " (sampled=" << frameHash.pixelsSampled
              << ", nonEmpty=" << frameHash.nonEmptyPixels << ")" << std::endl;
@@ -210,6 +216,85 @@ HdCarWashRenderPass::_GetCamera(HdRenderPassStateSharedPtr const& renderPassStat
     return const_cast<HdCarWashCamera*>(
         dynamic_cast<HdCarWashCamera const*>(hdCamera));
 }
+
+namespace {
+
+// FINDING #4a fix — format-aware AOV writes.
+//
+// The internal framebuffer always stores float32 source data (GfVec4f color,
+// float depth, GfVec3f normal, int32_t ids). The destination HdRenderBuffer,
+// however, may have been allocated by the client (Solaris/Husk/usdview) in a
+// *narrower* format: color is routinely UNorm8Vec4 (4 B/px) or Float16Vec4
+// (8 B/px), not Float32Vec4 (16 B/px). Blindly std::copy-ing the float32
+// source into the mapped buffer therefore overruns the heap allocation by up
+// to 4x. Every write below is bounded by the buffer's real per-pixel byte
+// size (HdDataSizeOfFormat(fmt)), and color is converted to the destination
+// component format rather than memcpy'd.
+
+// Clamp + write a single float component into a destination of the given
+// component format. Only the float32/float16/unorm8 component families are
+// produced by the conversions here.
+inline void
+_WriteFloatComponent(void* dst, HdFormat componentFormat, float value)
+{
+    switch (componentFormat) {
+        case HdFormatFloat32:
+            *static_cast<float*>(dst) = value;
+            break;
+        case HdFormatFloat16:
+            *static_cast<GfHalf*>(dst) = GfHalf(value);
+            break;
+        case HdFormatUNorm8: {
+            float c = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+            *static_cast<uint8_t*>(dst) =
+                static_cast<uint8_t>(std::lround(c * 255.0f));
+            break;
+        }
+        case HdFormatSNorm8: {
+            float c = value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
+            *static_cast<int8_t*>(dst) =
+                static_cast<int8_t>(std::lround(c * 127.0f));
+            break;
+        }
+        default:
+            break;  // unsupported component family; caller guards this
+    }
+}
+
+// Convert/copy the float32 color framebuffer into the destination format,
+// honoring its component format and component count. Returns false (and
+// writes nothing) if the destination component family is not one we can
+// produce, so the caller can warn-and-skip instead of corrupting memory.
+bool
+_WriteColorAov(void* data, HdFormat fmt,
+               std::vector<GfVec4f> const& src, size_t numPixels)
+{
+    const HdFormat compFmt = HdGetComponentFormat(fmt);
+    const size_t   compCount = HdGetComponentCount(fmt);
+
+    if (compFmt != HdFormatFloat32 &&
+        compFmt != HdFormatFloat16 &&
+        compFmt != HdFormatUNorm8 &&
+        compFmt != HdFormatSNorm8) {
+        return false;  // integer / unsupported color format
+    }
+    const size_t compSize = HdDataSizeOfFormat(compFmt);
+    if (compSize == 0 || compCount == 0 || compCount > 4) {
+        return false;
+    }
+
+    uint8_t* out = static_cast<uint8_t*>(data);
+    for (size_t i = 0; i < numPixels; ++i) {
+        const GfVec4f& px = src[i];
+        for (size_t c = 0; c < compCount; ++c) {
+            _WriteFloatComponent(out + c * compSize, compFmt, px[static_cast<int>(c)]);
+        }
+        out += compCount * compSize;
+    }
+    return true;
+}
+
+} // anonymous namespace
 
 void
 HdCarWashRenderPass::_CopyFramebufferToAOVs(
@@ -243,37 +328,109 @@ HdCarWashRenderPass::_CopyFramebufferToAOVs(
 
         size_t numPixels = static_cast<size_t>(width) * height;
 
-        // Copy appropriate data based on AOV type
+        // Destination format + capacity. The buffer was allocated as exactly
+        // HdDataSizeOfFormat(fmt) * width * height bytes, so that product is
+        // the hard upper bound for every write below.
+        const HdFormat fmt = buffer->GetFormat();
+        const size_t dstBytesPerPixel = HdDataSizeOfFormat(fmt);
+        const size_t dstCapacity = dstBytesPerPixel * numPixels;
+
+        // Copy appropriate data based on AOV type. Each branch either converts
+        // the float32 source into the destination format, or verifies the
+        // source byte count matches the destination capacity before copying.
         if (binding.aovName == HdAovTokens->color) {
-            GfVec4f* pixels = static_cast<GfVec4f*>(data);
-            std::copy(_framebuffer.color.begin(),
-                      _framebuffer.color.end(),
-                      pixels);
+            // Color may be UNorm8Vec4 / Float16Vec4 / Float32Vec4 etc.
+            // Convert per-component into whatever the client allocated.
+            if (!_WriteColorAov(data, fmt, _framebuffer.color, numPixels)) {
+                TF_WARN("Unsupported color AOV format (%d) for '%s'; skipping",
+                        static_cast<int>(fmt), binding.aovName.GetText());
+            }
         }
         else if (binding.aovName == HdAovTokens->depth) {
-            float* pixels = static_cast<float*>(data);
-            std::copy(_framebuffer.depth.begin(),
-                      _framebuffer.depth.end(),
-                      pixels);
+            // Source is float32. Only copy if the destination is a single
+            // float32 component of matching capacity.
+            const size_t srcBytes = _framebuffer.depth.size() * sizeof(float);
+            if (fmt == HdFormatFloat32 && srcBytes == dstCapacity) {
+                std::copy(_framebuffer.depth.begin(),
+                          _framebuffer.depth.end(),
+                          static_cast<float*>(data));
+            } else if (HdGetComponentFormat(fmt) == HdFormatFloat16 &&
+                       HdGetComponentCount(fmt) == 1 &&
+                       dstCapacity >= numPixels * sizeof(GfHalf)) {
+                GfHalf* out = static_cast<GfHalf*>(data);
+                for (size_t i = 0; i < numPixels; ++i) {
+                    out[i] = GfHalf(_framebuffer.depth[i]);
+                }
+            } else {
+                TF_WARN("Depth AOV format mismatch (fmt=%d, %zu src vs %zu dst "
+                        "bytes) for '%s'; skipping",
+                        static_cast<int>(fmt), srcBytes, dstCapacity,
+                        binding.aovName.GetText());
+            }
         }
         else if (binding.aovName == HdAovTokens->normal) {
-            GfVec3f* pixels = static_cast<GfVec3f*>(data);
-            std::copy(_framebuffer.normal.begin(),
-                      _framebuffer.normal.end(),
-                      pixels);
+            // Source is GfVec3f (float32 x3). Convert per-component for narrow
+            // formats; require >=3 components.
+            const size_t srcBytes = _framebuffer.normal.size() * sizeof(GfVec3f);
+            const HdFormat compFmt = HdGetComponentFormat(fmt);
+            const size_t compCount = HdGetComponentCount(fmt);
+            if (fmt == HdFormatFloat32Vec3 && srcBytes == dstCapacity) {
+                std::copy(_framebuffer.normal.begin(),
+                          _framebuffer.normal.end(),
+                          static_cast<GfVec3f*>(data));
+            } else if (compCount >= 3 &&
+                       (compFmt == HdFormatFloat32 ||
+                        compFmt == HdFormatFloat16 ||
+                        compFmt == HdFormatUNorm8 ||
+                        compFmt == HdFormatSNorm8) &&
+                       dstBytesPerPixel != 0) {
+                const size_t compSize = HdDataSizeOfFormat(compFmt);
+                uint8_t* out = static_cast<uint8_t*>(data);
+                for (size_t i = 0; i < numPixels; ++i) {
+                    const GfVec3f& n = _framebuffer.normal[i];
+                    for (size_t c = 0; c < 3; ++c) {
+                        _WriteFloatComponent(out + c * compSize, compFmt,
+                                             n[static_cast<int>(c)]);
+                    }
+                    out += dstBytesPerPixel;  // skip any extra (e.g. alpha) channel
+                }
+            } else {
+                TF_WARN("Normal AOV format mismatch (fmt=%d, %zu src vs %zu dst "
+                        "bytes) for '%s'; skipping",
+                        static_cast<int>(fmt), srcBytes, dstCapacity,
+                        binding.aovName.GetText());
+            }
         }
         else if (binding.aovName == HdAovTokens->primId ||
                  binding.aovName == HdCarWashAovTokens->carwashObjectId) {
-            int32_t* pixels = static_cast<int32_t*>(data);
-            std::copy(_framebuffer.objectId.begin(),
-                      _framebuffer.objectId.end(),
-                      pixels);
+            // Source is int32_t. Require a single-component int32 destination
+            // of matching capacity.
+            const size_t srcBytes =
+                _framebuffer.objectId.size() * sizeof(int32_t);
+            if (fmt == HdFormatInt32 && srcBytes == dstCapacity) {
+                std::copy(_framebuffer.objectId.begin(),
+                          _framebuffer.objectId.end(),
+                          static_cast<int32_t*>(data));
+            } else {
+                TF_WARN("Id AOV format mismatch (fmt=%d, %zu src vs %zu dst "
+                        "bytes) for '%s'; skipping",
+                        static_cast<int>(fmt), srcBytes, dstCapacity,
+                        binding.aovName.GetText());
+            }
         }
         else if (binding.aovName == HdCarWashAovTokens->carwashSemanticId) {
-            int32_t* pixels = static_cast<int32_t*>(data);
-            std::copy(_framebuffer.primId.begin(),
-                      _framebuffer.primId.end(),
-                      pixels);
+            const size_t srcBytes =
+                _framebuffer.primId.size() * sizeof(int32_t);
+            if (fmt == HdFormatInt32 && srcBytes == dstCapacity) {
+                std::copy(_framebuffer.primId.begin(),
+                          _framebuffer.primId.end(),
+                          static_cast<int32_t*>(data));
+            } else {
+                TF_WARN("Semantic id AOV format mismatch (fmt=%d, %zu src vs "
+                        "%zu dst bytes) for '%s'; skipping",
+                        static_cast<int>(fmt), srcBytes, dstCapacity,
+                        binding.aovName.GetText());
+            }
         }
 
         buffer->Unmap();

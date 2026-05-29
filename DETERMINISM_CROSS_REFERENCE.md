@@ -6,6 +6,33 @@
 
 ---
 
+> ## ⚠️ Status: Forward-Looking Design Intent
+>
+> **This document describes the intended determinism architecture, not the current state
+> of the code.** Most of the C++ shown below is illustrative design and is **not yet
+> implemented**. In particular:
+>
+> - **What exists today:** `rasterizer.cpp` implements an FNV-1a (64-bit) frame hash over
+>   the **raw IEEE-754 bits** of every AOV value (NaN and -0.0 canonicalized), so 5th-decimal
+>   accumulation-order drift is detected. The **authoritative** check
+>   (`HdCarWashFramebuffer::ComputeAuthoritativeHash` / `ComputeHash(1)`) covers **every
+>   pixel** and is the value the render pass uses for the "VERIFIED" signal; a faster
+>   `ComputeHash(N>1)` sampled preview also exists but is explicitly non-authoritative. The
+>   single-threaded CPU rasterizer iterates faces in face-index order.
+> - **What does NOT exist yet:** there is no `sceneHash.h`, no `frameVerifier.h`, no
+>   `HdCarWashSceneHasher`, and no `HdCarWashFrameVerifier`. The project does **not** depend
+>   on OpenSSL, and **SHA-256 is not used anywhere** — the SHA-256 code blocks below are
+>   aspirational. Mesh path sorting, frame-manifest JSON output, and the dual-render test
+>   are **planned**, not present.
+>
+> Treat every code block in this file as a proposal to be implemented and verified, not as
+> a description of shipped behavior. The current verified guarantee is limited to:
+> single-threaded CPU rasterization with face-index-ordered iteration and a full-coverage,
+> raw-bits FNV-1a frame hash (`ComputeAuthoritativeHash`), with an optional sampled preview
+> for cheap spot-checking.
+
+---
+
 ## The Unified Thesis
 
 Three systems, one principle: **Fixed order → Reproducible outputs**
@@ -90,10 +117,15 @@ Verification: Hash(output_1) == Hash(output_2) == Hash(output_n)
 
 ### Layer 1: Scene Identity (Content Hashing)
 
-```cpp
-// New file: sceneHash.h
+> **PLANNED — not implemented.** There is no `sceneHash.h` in the repo, and the project
+> does not link OpenSSL. The sketch below uses SHA-256 for illustration; the shipped
+> rasterizer uses FNV-1a instead (see `rasterizer.cpp`). If this is implemented, prefer
+> reusing the existing FNV-1a helpers over adding an OpenSSL dependency.
 
-#include <openssl/sha.h>
+```cpp
+// PLANNED new file: sceneHash.h (does not exist yet)
+
+#include <openssl/sha.h>  // PLANNED dependency — not currently used by the project
 
 /// Compute deterministic hash of entire scene state
 class HdCarWashSceneHasher {
@@ -161,8 +193,14 @@ void HdCarWashRasterizer::RasterizeMesh(HdCarWashMesh const* mesh) {
 
 ### Layer 4: Output Verification
 
+> **PLANNED — not implemented.** There is no `frameVerifier.h` or `HdCarWashFrameVerifier`
+> class, and SHA-256 is not used. What exists today is `HdCarWashFramebuffer::ComputeAuthoritativeHash`
+> in `rasterizer.cpp`, which produces an FNV-1a `HdCarWashFrameHash` over the raw IEEE-754
+> bits of every pixel (not a SHA-256, but full-coverage and drift-sensitive). The block
+> below is a design sketch.
+
 ```cpp
-// New file: frameVerifier.h
+// PLANNED new file: frameVerifier.h (does not exist yet)
 
 /// Verify frame determinism via dual-render test
 class HdCarWashFrameVerifier {
@@ -399,14 +437,17 @@ private:
 
 ### What We Can Guarantee
 
-| Layer | Guarantee | Verification Method |
-|-------|-----------|---------------------|
-| Scene input | Same USD stage → same scene hash | Hash comparison |
-| Mesh ordering | Lexicographic path sort | Log + verify |
-| Triangle order | Face index sequential | Implicit (single-threaded) |
-| Rasterization | Deterministic edge functions | CPU = deterministic |
-| AOV output | Same scene → same pixels | Dual-render test |
-| AI inference | Same AOVs + seed → same output | Seed locking |
+Status legend: ✅ implemented today · 🟡 planned.
+
+| Layer | Guarantee | Verification Method | Status |
+|-------|-----------|---------------------|--------|
+| Triangle order | Face index sequential | Implicit (single-threaded) | ✅ |
+| Rasterization | Deterministic edge functions | CPU = deterministic | ✅ |
+| Frame hash | Sampled AOV pixels → FNV-1a hash | `HdCarWashFramebuffer::ComputeHash` | ✅ |
+| Mesh ordering | Lexicographic path sort | Log + verify | 🟡 |
+| Scene input | Same USD stage → same scene hash | Hash comparison | 🟡 |
+| AOV output | Same scene → same pixels | Dual-render test | 🟡 |
+| AI inference | Same AOVs + seed → same output | Seed locking | 🟡 |
 
 ### What We Cannot Guarantee (Yet)
 
@@ -453,9 +494,9 @@ private:
    - 676 files, 4-layer determinism stack
    - Dual-run verified
 
-3. **HdCarWash** (C:\Users\User\Downloads\HDCARWAASH\HdCarWash)
-   - Phase 1: CPU rasterizer (implicitly deterministic)
-   - Phase 2: ComfyUI integration (needs seed locking)
+3. **HdCarWash** (C:\Users\User\CARWASH)
+   - Phase 1: CPU rasterizer (implicitly deterministic; full-coverage raw-bits FNV-1a frame hash)
+   - Phase 2: ComfyUI integration (planned; needs seed locking)
 
 ---
 

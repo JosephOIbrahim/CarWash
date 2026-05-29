@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 
@@ -68,9 +69,25 @@ namespace {
     }
 
     inline uint64_t fnv1a_float(uint64_t hash, float value) {
-        // Quantize to avoid floating-point precision issues
-        int32_t quantized = static_cast<int32_t>(value * 10000.0f);
-        return fnv1a_hash(hash, &quantized, sizeof(quantized));
+        // Hash the RAW IEEE-754 bits so that *any* meaningful bit difference
+        // (including 5th-decimal accumulation-order / reassociation drift) is
+        // detected. Quantizing before hashing would mask exactly the
+        // nondeterminism this check exists to catch.
+        //
+        // Two values are canonicalized so that only *meaningful* differences
+        // matter:
+        //   - all NaNs -> one fixed quiet-NaN bit pattern (NaN != NaN otherwise)
+        //   - -0.0 -> +0.0 (they are numerically equal but differ in bits)
+        uint32_t bits;
+        if (std::isnan(value)) {
+            bits = 0x7FC00000u;  // canonical quiet NaN
+        } else {
+            if (value == 0.0f) {
+                value = 0.0f;    // collapse -0.0 to +0.0
+            }
+            std::memcpy(&bits, &value, sizeof(bits));
+        }
+        return fnv1a_hash(hash, &bits, sizeof(bits));
     }
 }
 
@@ -90,12 +107,25 @@ HdCarWashFrameHash::ToString() const
 }
 
 HdCarWashFrameHash
+HdCarWashFramebuffer::ComputeAuthoritativeHash() const
+{
+    // Authoritative determinism check: hashes EVERY pixel (no subsampling).
+    // The "VERIFIED" claim must come from this path. ComputeHash(sampleRate>1)
+    // is a fast, explicitly non-authoritative preview only.
+    return ComputeHash(1u);
+}
+
+HdCarWashFrameHash
 HdCarWashFramebuffer::ComputeHash(unsigned int sampleRate) const
 {
     HdCarWashFrameHash result;
 
     if (width == 0 || height == 0 || color.empty()) {
         return result;
+    }
+
+    if (sampleRate == 0) {
+        sampleRate = 1;  // guard against div/step-of-zero
     }
 
     uint64_t colorH = FNV_OFFSET_BASIS;
@@ -107,11 +137,7 @@ HdCarWashFramebuffer::ComputeHash(unsigned int sampleRate) const
     uint32_t sampled = 0;
     uint32_t nonEmpty = 0;
 
-    // Strategic sampling: sample every Nth pixel in a grid pattern
-    // Also always sample corners and center for edge case coverage
-    auto samplePixel = [&](size_t idx) {
-        if (idx >= numPixels) return;
-
+    auto hashPixel = [&](size_t idx) {
         sampled++;
 
         // Color (RGBA)
@@ -140,17 +166,34 @@ HdCarWashFramebuffer::ComputeHash(unsigned int sampleRate) const
         }
     };
 
-    // Sample corners
-    samplePixel(0);                                          // Top-left
-    samplePixel(width - 1);                                  // Top-right
-    samplePixel(numPixels - width);                          // Bottom-left
-    samplePixel(numPixels - 1);                              // Bottom-right
-    samplePixel((height / 2) * width + (width / 2));         // Center
+    if (sampleRate == 1) {
+        // Authoritative full-buffer hash: every pixel, deterministic order,
+        // each pixel hashed exactly once.
+        for (size_t idx = 0; idx < numPixels; ++idx) {
+            hashPixel(idx);
+        }
+    } else {
+        // Fast non-authoritative preview: strategic grid sampling plus the
+        // corners and center for edge-case coverage. NOTE: this samples only a
+        // fraction of pixels, so differences in unsampled pixels are invisible
+        // — it must NOT be used to substantiate a determinism "VERIFIED" claim.
+        auto samplePixel = [&](size_t idx) {
+            if (idx >= numPixels) return;
+            hashPixel(idx);
+        };
 
-    // Grid sampling
-    for (size_t y = 0; y < height; y += sampleRate) {
-        for (size_t x = 0; x < width; x += sampleRate) {
-            samplePixel(y * width + x);
+        // Sample corners
+        samplePixel(0);                                          // Top-left
+        samplePixel(width - 1);                                  // Top-right
+        samplePixel(numPixels - width);                          // Bottom-left
+        samplePixel(numPixels - 1);                              // Bottom-right
+        samplePixel((height / 2) * width + (width / 2));         // Center
+
+        // Grid sampling
+        for (size_t y = 0; y < height; y += sampleRate) {
+            for (size_t x = 0; x < width; x += sampleRate) {
+                samplePixel(y * width + x);
+            }
         }
     }
 

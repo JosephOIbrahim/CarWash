@@ -84,29 +84,52 @@ endif()
 # Installation
 # ==============================================================================
 
-# Install plugin info for USD registry
+# Install plugin info for USD registry.
+#
+# pxr plugin discovery: the directory that CONTAINS plugInfo.json is the
+# manifest dir. plugInfo.json declares Root="." (manifest dir), and
+# LibraryPath="lib/hdCarWash.dll" + ResourcePath="resources" resolve
+# relative to it. The manifest dir is therefore the plugin install root:
+#
+#   dso/usd/hdCarWash/plugInfo.json          <- manifest
+#   dso/usd/hdCarWash/lib/hdCarWash.dll       <- LibraryPath (plugin CMake)
+#   dso/usd/hdCarWash/resources/...           <- ResourcePath
+#
+# plugInfo.json must sit beside lib/ at the install root (NOT inside
+# resources/), so that its LibraryPath resolves to the actual dll.
 install(
     FILES plugin/plugInfo.json
-    DESTINATION plugin/usd/hdCarWash/resources
+    DESTINATION usd/hdCarWash
 )
 
-# Install schemas
-install(
-    DIRECTORY schema/
-    DESTINATION plugin/usd/hdCarWash/resources/schema
-    FILES_MATCHING PATTERN "*.usda"
-)
+# plugInfo.json declares ResourcePath="resources"; create that directory at the
+# install root even when there are no resources to populate it yet, so the
+# deployed layout actually matches the manifest (an empty dir is harmless and
+# avoids pxr resolving ResourcePath to a missing path). install(DIRECTORY ...)
+# with no source creates an empty destination directory.
+install(DIRECTORY DESTINATION usd/hdCarWash/resources)
 
-# Install Houdini integration
-install(
-    DIRECTORY houdini/
-    DESTINATION houdini
-    FILES_MATCHING
-        PATTERN "*.py"
-        PATTERN "*.pypanel"
-        PATTERN "*.shelf"
-        PATTERN "*.hda"
-)
+# Install schemas (only if a schema/ dir exists; absent in current tree).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/schema")
+    install(
+        DIRECTORY schema/
+        DESTINATION usd/hdCarWash/resources/schema
+        FILES_MATCHING PATTERN "*.usda"
+    )
+endif()
+
+# Install Houdini integration (only if a houdini/ dir exists; absent here).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/houdini")
+    install(
+        DIRECTORY houdini/
+        DESTINATION houdini
+        FILES_MATCHING
+            PATTERN "*.py"
+            PATTERN "*.pypanel"
+            PATTERN "*.shelf"
+            PATTERN "*.hda"
+    )
+endif()
 
 # ==============================================================================
 # Package Info

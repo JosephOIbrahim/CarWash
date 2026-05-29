@@ -12,9 +12,20 @@ echo          HdCarWash Rebuild and Install
 echo     =============================================
 echo.
 
-set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.607
-set BUILD_DIR=%~dp0build
-set INSTALL_DIR=%USERPROFILE%\houdini21.0\dso\usd\hdCarWash
+REM HFS = Houdini install root. Honor an existing HFS (set by Houdini's own
+REM environment / hcmd shell); otherwise fall back to a default install.
+REM Override by setting HFS before running this script, e.g.:
+REM   set "HFS=C:\Program Files\Side Effects Software\Houdini 21.0.640"
+if not defined HFS set "HFS=C:\Program Files\Side Effects Software\Houdini 21.0.607"
+set "HOUDINI_PATH=%HFS%"
+set "BUILD_DIR=%~dp0build"
+
+REM Install PREFIX is the Houdini user dir. CMake's install() rules place the
+REM plugin under <prefix>\dso\... so plugInfo.json + lib\hdCarWash.dll land
+REM together as a discoverable pxr plugin. Override HOUDINI_USER_PREF_DIR to
+REM target a different Houdini version dir.
+if not defined HOUDINI_USER_PREF_DIR set "HOUDINI_USER_PREF_DIR=%USERPROFILE%\houdini21.0"
+set "INSTALL_PREFIX=%HOUDINI_USER_PREF_DIR%\dso"
 
 REM Check if Houdini is running
 tasklist /FI "IMAGENAME eq houdini.exe" 2>NUL | find /I /N "houdini.exe">NUL
@@ -60,14 +71,15 @@ echo.
 echo [SUCCESS] Build completed!
 echo.
 
-REM Install
-echo [INFO] Installing to: %INSTALL_DIR%
+REM Install via CMake so plugInfo.json AND the dll deploy together using the
+REM project's install() rules. This deploys:
+REM   %INSTALL_PREFIX%\usd\hdCarWash\plugInfo.json   (the pxr manifest)
+REM   %INSTALL_PREFIX%\usd\hdCarWash\lib\hdCarWash.dll (LibraryPath target)
+echo [INFO] Installing to: %INSTALL_PREFIX%\usd\hdCarWash
 
-if not exist "%INSTALL_DIR%\lib" mkdir "%INSTALL_DIR%\lib"
-
-copy /Y "%BUILD_DIR%\plugin\hdCarWash\Release\hdCarWash.dll" "%INSTALL_DIR%\lib\" >NUL
+cmake --install . --config Release --prefix "%INSTALL_PREFIX%"
 if errorlevel 1 (
-    echo [ERROR] Failed to copy DLL
+    echo [ERROR] Install failed!
     pause
     exit /b 1
 )

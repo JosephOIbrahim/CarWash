@@ -20,6 +20,8 @@
 #include <memory>
 #include <functional>
 #include <future>
+#include <atomic>
+#include <mutex>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -118,6 +120,16 @@ public:
     /// Get current backend
     const TfToken& GetBackend() const { return _backend; }
 
+    /// Enable/disable deterministic mode (default: enabled).
+    /// When enabled, the seed is not jittered and cache keys are derived from
+    /// content rather than wall-clock time, so the same scene + same seed yields
+    /// the same output on every submission. Disable only for an explicit
+    /// "force re-render" / non-deterministic path.
+    void SetDeterministic(bool deterministic) { _deterministic = deterministic; }
+
+    /// Get current deterministic mode
+    bool GetDeterministic() const { return _deterministic; }
+
     // =========================================================================
     // Buffer Encoding Utilities
     // =========================================================================
@@ -141,11 +153,6 @@ public:
     static std::string EncodeIdBuffer(
         const std::vector<int32_t>& ids,
         unsigned int width, unsigned int height);
-
-    /// Decode PNG (base64) back to color buffer
-    static std::vector<GfVec4f> DecodeColorImage(
-        const std::string& base64Png,
-        unsigned int& outWidth, unsigned int& outHeight);
 
 private:
     /// Build workflow JSON from template and parameters
@@ -217,8 +224,9 @@ private:
     std::string _wsUrl;
     std::string _workflowPath;
     TfToken _backend;
-    bool _cancelRequested = false;
+    std::atomic<bool> _cancelRequested{false};
     bool _useWebSocket = true;  // Prefer WebSocket over polling
+    bool _deterministic = true;  // Deterministic by default (#3b reproducibility)
 
     // Client ID for ComfyUI session
     std::string _clientId;
@@ -227,7 +235,11 @@ private:
 #ifdef _WIN32
     void* _wsSocket = nullptr;  // SOCKET as void* to avoid header pollution
 #endif
-    bool _wsConnected = false;
+    std::atomic<bool> _wsConnected{false};
+    // Shutdown coordination for the receive loop (avoids use-after-close race
+    // when disconnect/destructor close the socket on a different thread).
+    std::atomic<bool> _wsStop{false};       // signal the receive loop to exit
+    std::atomic<int> _wsReceiving{0};        // count of threads in select/recv; disconnect waits for 0
     std::mutex _wsMutex;
 
     // ComfyUI input directory for control images
