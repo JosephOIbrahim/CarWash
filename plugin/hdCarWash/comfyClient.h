@@ -233,7 +233,14 @@ private:
 #ifdef _WIN32
     void* _wsSocket = nullptr;  // SOCKET as void* to avoid header pollution
 #endif
-    bool _wsConnected = false;
+    std::atomic<bool> _wsConnected{false};
+    // Teardown coordination (#5d): _WebSocketReceive runs on the ProcessFrameAsync
+    // thread; _WebSocketDisconnect (destructor/cancel) must not closesocket() while
+    // that thread is inside select()/recv(). _wsStop signals the receive loop to
+    // exit; _wsReceiving counts threads currently in select/recv so disconnect can
+    // wait for 0 before closing the handle (eliminates use-after-close).
+    std::atomic<bool> _wsStop{false};
+    std::atomic<int> _wsReceiving{0};
     std::mutex _wsMutex;
 
     // ComfyUI input directory for control images

@@ -2188,6 +2188,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     ioctlsocket(sock, FIONBIO, &mode);
 
     _wsSocket = reinterpret_cast<void*>(sock);
+    _wsStop = false;  // fresh connection: clear any prior stop signal (#5d)
     _wsConnected = true;
 
     debugLog << "[WebSocket] Connected successfully" << std::endl;
@@ -2207,12 +2208,24 @@ HdCarWashComfyClient::_WebSocketDisconnect()
 #ifdef _WIN32
     std::lock_guard<std::mutex> lock(_wsMutex);
 
+    // Signal the receive loop to stop and mark the connection down BEFORE closing
+    // the socket, so a thread parked in _WebSocketReceive() observes it and exits.
+    _wsStop = true;
+    _wsConnected = false;
+
+    // Wait until no thread is inside select()/recv() before closing the handle
+    // (#5d use-after-close). The receive loop uses a bounded select timeout and a
+    // non-blocking socket, so this clears quickly; cap the wait defensively. We do
+    // not take any lock the receive path needs, so this cannot deadlock.
+    for (int i = 0; i < 400 && _wsReceiving.load() > 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
     if (_wsSocket) {
         SOCKET sock = reinterpret_cast<SOCKET>(_wsSocket);
         closesocket(sock);
         _wsSocket = nullptr;
     }
-    _wsConnected = false;
 #endif
 }
 
@@ -2270,7 +2283,15 @@ std::string
 HdCarWashComfyClient::_WebSocketReceive(int timeoutMs)
 {
 #ifdef _WIN32
-    if (!_wsConnected || !_wsSocket) {
+    // Mark this thread as actively reading; disconnect waits for this to hit 0
+    // before closesocket(), so the handle can't be closed mid-select/recv (#5d).
+    _wsReceiving.fetch_add(1);
+    struct ReceivingGuard {
+        std::atomic<int>& flag;
+        ~ReceivingGuard() { flag.fetch_sub(1); }
+    } receivingGuard{_wsReceiving};
+
+    if (_wsStop || !_wsConnected || !_wsSocket) {
         return "";
     }
 
