@@ -20,6 +20,7 @@
 #include <memory>
 #include <functional>
 #include <future>
+#include <atomic>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -39,6 +40,11 @@ struct HDCARWASH_API HdCarWashStyleParams
     bool useDepthControl = true;
     bool useNormalControl = false;  // Disabled by default - requires canny ControlNet model
     bool useEdgeControl = false;
+    // When true, the workflow seed is NOT time-jittered, so the same scene+seed
+    // reproduces the same ComfyUI render (and cache-hits). Default false keeps
+    // the existing cache-busting behavior; wire this from the deterministicMode
+    // render setting to make the AI submission deterministic. (#3b)
+    bool deterministic = false;
 };
 
 /// \struct HdCarWashRenderResult
@@ -217,7 +223,7 @@ private:
     std::string _wsUrl;
     std::string _workflowPath;
     TfToken _backend;
-    bool _cancelRequested = false;
+    std::atomic<bool> _cancelRequested{false};
     bool _useWebSocket = true;  // Prefer WebSocket over polling
 
     // Client ID for ComfyUI session

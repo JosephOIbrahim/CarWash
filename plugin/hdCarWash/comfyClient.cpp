@@ -358,6 +358,7 @@ HdCarWashComfyClient::ProcessFrame(
     const HdCarWashStyleParams& params)
 {
     HdCarWashRenderResult result;
+    _cancelRequested = false;  // reset per-frame so a prior cancel doesn't permanently disable the client (#5)
     auto startTime = std::chrono::high_resolution_clock::now();
 
     TF_DEBUG_MSG(HD_CARWASH, "ProcessFrame: %dx%d, prompt='%s'\n",
@@ -835,7 +836,7 @@ HdCarWashComfyClient::_BuildWorkflow(
     json << "        \"positive\": [\"2\", 0],\n";
     json << "        \"negative\": [\"3\", 0],\n";
     json << "        \"latent_image\": [\"4\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";  // Vary seed to prevent caching
+    json << "        \"seed\": " << (params.deterministic ? params.seed : params.seed + ms % 1000000) << ",\n";  // Vary seed to prevent caching
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -878,7 +879,10 @@ HdCarWashComfyClient::_SaveControlImages(
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     std::string subfolder = "hdcarwash_ctrl_" + std::to_string(ms % 1000000);
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[_SaveControlImages] Uploading to ComfyUI subfolder: " << subfolder << std::endl;
 
     bool success = true;
@@ -987,7 +991,10 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     std::string positivePrompt = escapeJson(params.prompt);
     std::string negativePrompt = escapeJson(params.negativePrompt);
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[_BuildWorkflowControlNet] Building ControlNet workflow" << std::endl;
     debugLog << "  useDepthControl: " << params.useDepthControl << std::endl;
     debugLog << "  useNormalControl: " << params.useNormalControl << std::endl;
@@ -1132,7 +1139,7 @@ HdCarWashComfyClient::_BuildWorkflowControlNet(
     json << "        \"positive\": [\"" << finalPositive << "\", 0],\n";
     json << "        \"negative\": [\"" << finalNegative << "\", 1],\n";
     json << "        \"latent_image\": [\"" << latentNode << "\", 0],\n";
-    json << "        \"seed\": " << (params.seed + ms % 1000000) << ",\n";
+    json << "        \"seed\": " << (params.deterministic ? params.seed : params.seed + ms % 1000000) << ",\n";
     json << "        \"steps\": " << params.inferenceSteps << ",\n";
     json << "        \"cfg\": " << params.guidanceScale << ",\n";
     json << "        \"sampler_name\": \"euler\",\n";
@@ -1186,7 +1193,10 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
                  framebuffer.width, framebuffer.height);
 
     // Also write to debug log file
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "\n[_BuildWorkflowLTX2] ENTERED - Building LTX2 workflow" << std::endl;
     debugLog << "[_BuildWorkflowLTX2] controlImageSubfolder: " << controlImageSubfolder << std::endl;
     debugLog << "[_BuildWorkflowLTX2] framebuffer: " << framebuffer.width << "x" << framebuffer.height << std::endl;
@@ -1362,7 +1372,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"RandomNoise\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"noise_seed\": " << (params.seed + ms % 1000000) << "\n";
+    json << "        \"noise_seed\": " << (params.deterministic ? params.seed : params.seed + ms % 1000000) << "\n";
     json << "      }\n";
     json << "    },\n";
     int noiseNode = nodeId++;
@@ -1412,7 +1422,10 @@ std::string
 HdCarWashComfyClient::_SubmitWorkflow(const std::string& workflowJson)
 {
     // DEBUG: Log workflow submission
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[_SubmitWorkflow] Workflow JSON size: " << workflowJson.size() << " bytes" << std::endl;
     if (workflowJson.size() < 2000) {
         debugLog << "[_SubmitWorkflow] Workflow: " << workflowJson << std::endl;
@@ -1522,7 +1535,10 @@ HdCarWashComfyClient::_DownloadResult(
     unsigned int& width, unsigned int& height)
 {
     // DEBUG: Write to file for diagnosis
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[_DownloadResult] promptId: " << promptId << std::endl;
 
     // Get output info from history
@@ -1698,7 +1714,7 @@ HdCarWashComfyClient::_HttpGet(const std::string& endpoint)
     // Extract port if present
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        try { port = std::stoi(host.substr(colonPos + 1)); } catch (...) { /* keep default 8188 on malformed/empty/IPv6 port */ }
         host = host.substr(0, colonPos);
     }
 
@@ -1821,7 +1837,7 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
 
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        try { port = std::stoi(host.substr(colonPos + 1)); } catch (...) { /* keep default 8188 on malformed/empty/IPv6 port */ }
         host = host.substr(0, colonPos);
     }
 
@@ -1947,7 +1963,7 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
 
     size_t colonPos = host.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(host.substr(colonPos + 1));
+        try { port = std::stoi(host.substr(colonPos + 1)); } catch (...) { /* keep default 8188 on malformed/empty/IPv6 port */ }
         host = host.substr(0, colonPos);
     }
 
@@ -2080,7 +2096,7 @@ HdCarWashComfyClient::_WebSocketConnect()
     // Extract port
     size_t colonPos = url.find(':');
     if (colonPos != std::string::npos) {
-        port = std::stoi(url.substr(colonPos + 1));
+        try { port = std::stoi(url.substr(colonPos + 1)); } catch (...) { /* keep default port on malformed/empty/IPv6 port */ }
         host = url.substr(0, colonPos);
     } else {
         host = url;
@@ -2089,7 +2105,10 @@ HdCarWashComfyClient::_WebSocketConnect()
     // Add client_id to path
     std::string fullPath = path + "?clientId=" + _clientId;
 
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[WebSocket] Connecting to " << host << ":" << port << fullPath << std::endl;
 
     // Create socket
@@ -2358,7 +2377,10 @@ HdCarWashComfyClient::_WebSocketReceive(int timeoutMs)
 bool
 HdCarWashComfyClient::_WaitForCompletionWebSocket(const std::string& promptId, float timeoutSeconds)
 {
-    std::ofstream debugLog("C:/Temp/hdcarwash_debug.txt", std::ios::app);
+    std::ofstream debugLog;
+    if (TfDebug::IsEnabled(HD_CARWASH)) {
+        debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
+    }
     debugLog << "[WebSocket] Waiting for completion of prompt: " << promptId << std::endl;
 
     // Connect to WebSocket
