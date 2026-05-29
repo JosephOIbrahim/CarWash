@@ -12,7 +12,7 @@ echo     ║                                           ║
 echo     ╚═══════════════════════════════════════════╝
 echo.
 
-set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.607
+set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.729
 
 echo     Checking installation...
 echo.
@@ -25,7 +25,7 @@ if not exist "%HOUDINI_PATH%\bin\houdini.exe" (
     exit /b 1
 )
 
-echo     [OK] Houdini 21.0.607
+echo     [OK] Houdini 21.0.729
 
 set CARWASH_DLL=%USERPROFILE%\houdini21.0\dso\usd\hdCarWash\lib\hdCarWash.dll
 if exist "%CARWASH_DLL%" (

@@ -68,7 +68,7 @@ git clone https://github.com/JosephOIbrahim/hdCarWash.git
 ```bash
 cd hdCarWash
 mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/Program Files/Side Effects Software/Houdini 21.0.607"
+cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/Program Files/Side Effects Software/Houdini 21.0.729"
 cmake --build . --config Release
 ```
 

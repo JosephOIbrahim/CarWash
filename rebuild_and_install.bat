@@ -12,7 +12,7 @@ echo          HdCarWash Rebuild and Install
 echo     =============================================
 echo.
 
-set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.607
+set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.729
 set BUILD_DIR=%~dp0build
 set INSTALL_DIR=%USERPROFILE%\houdini21.0\dso\usd\hdCarWash
 

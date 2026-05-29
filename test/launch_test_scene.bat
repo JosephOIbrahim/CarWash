@@ -7,7 +7,7 @@ echo CarWash Test Scene Launcher
 echo ===========================
 echo.
 
-set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.607
+set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.729
 
 REM Check if Houdini exists
 if not exist "%HOUDINI_PATH%\bin\houdini.exe" (
