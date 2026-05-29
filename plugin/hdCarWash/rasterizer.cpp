@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>   // std::memcpy for raw-bits float hashing
 #include <sstream>
 #include <iomanip>
 
@@ -68,9 +69,19 @@ namespace {
     }
 
     inline uint64_t fnv1a_float(uint64_t hash, float value) {
-        // Quantize to avoid floating-point precision issues
-        int32_t quantized = static_cast<int32_t>(value * 10000.0f);
-        return fnv1a_hash(hash, &quantized, sizeof(quantized));
+        // Hash the RAW IEEE-754 bits — NOT a quantized value. Quantizing
+        // (value*10000) before hashing collapses exactly the 5th-decimal
+        // accumulation/reassociation drift this determinism check exists to
+        // detect, making nondeterministic frames hash identical. Canonicalize
+        // NaN and -0.0 so only meaningful differences register.
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        if ((bits & 0x7F800000u) == 0x7F800000u && (bits & 0x007FFFFFu) != 0u) {
+            bits = 0x7FC00000u;  // canonical quiet NaN
+        } else if (bits == 0x80000000u) {
+            bits = 0x00000000u;  // -0.0 -> +0.0
+        }
+        return fnv1a_hash(hash, &bits, sizeof(bits));
     }
 }
 
@@ -160,6 +171,60 @@ HdCarWashFramebuffer::ComputeHash(unsigned int sampleRate) const
     result.idHash = idH;
     result.combined = colorH ^ depthH ^ normalH ^ idH;
     result.pixelsSampled = sampled;
+    result.nonEmptyPixels = nonEmpty;
+
+    return result;
+}
+
+HdCarWashFrameHash
+HdCarWashFramebuffer::ComputeAuthoritativeHash() const
+{
+    // The authoritative determinism hash: every pixel of every AOV, hashed
+    // exactly once in index order via raw IEEE-754 bits (no subsampling, no
+    // corner double-counting). This is the ONLY hash whose equality may back a
+    // "VERIFIED deterministic" claim; ComputeHash(N>1) is a fast preview only.
+    HdCarWashFrameHash result;
+
+    if (width == 0 || height == 0 || color.empty()) {
+        return result;
+    }
+
+    uint64_t colorH = FNV_OFFSET_BASIS;
+    uint64_t depthH = FNV_OFFSET_BASIS;
+    uint64_t normalH = FNV_OFFSET_BASIS;
+    uint64_t idH = FNV_OFFSET_BASIS;
+
+    const size_t numPixels = static_cast<size_t>(width) * height;
+    uint32_t nonEmpty = 0;
+
+    for (size_t idx = 0; idx < numPixels; ++idx) {
+        const GfVec4f& c = color[idx];
+        colorH = fnv1a_float(colorH, c[0]);
+        colorH = fnv1a_float(colorH, c[1]);
+        colorH = fnv1a_float(colorH, c[2]);
+        colorH = fnv1a_float(colorH, c[3]);
+
+        depthH = fnv1a_float(depthH, depth[idx]);
+
+        const GfVec3f& n = normal[idx];
+        normalH = fnv1a_float(normalH, n[0]);
+        normalH = fnv1a_float(normalH, n[1]);
+        normalH = fnv1a_float(normalH, n[2]);
+
+        idH = fnv1a_hash(idH, &objectId[idx], sizeof(int32_t));
+        idH = fnv1a_hash(idH, &primId[idx], sizeof(int32_t));
+
+        if (objectId[idx] >= 0) {
+            nonEmpty++;
+        }
+    }
+
+    result.colorHash = colorH;
+    result.depthHash = depthH;
+    result.normalHash = normalH;
+    result.idHash = idH;
+    result.combined = colorH ^ depthH ^ normalH ^ idH;
+    result.pixelsSampled = static_cast<uint32_t>(numPixels);
     result.nonEmptyPixels = nonEmpty;
 
     return result;

@@ -44,9 +44,16 @@ struct HDCARWASH_API HdCarWashFrameHash
     /// Format as hex string for logging
     std::string ToString() const;
 
-    /// Compare for equality (determinism check)
+    /// Compare for equality (determinism check). Compare every sub-hash, not
+    /// just the XOR-folded `combined` — folding loses information (e.g. two
+    /// AOVs swapping hashes folds identically), so comparing all fields is
+    /// strictly stronger and avoids false "VERIFIED" matches.
     bool operator==(HdCarWashFrameHash const& other) const {
-        return combined == other.combined;
+        return colorHash == other.colorHash
+            && depthHash == other.depthHash
+            && normalHash == other.normalHash
+            && idHash == other.idHash
+            && combined == other.combined;
     }
     bool operator!=(HdCarWashFrameHash const& other) const {
         return !(*this == other);
@@ -73,9 +80,18 @@ struct HDCARWASH_API HdCarWashFramebuffer
     void Resize(unsigned int w, unsigned int h);
     void Clear();
 
-    /// Compute determinism hash using strategic sampling
-    /// @param sampleRate Sample every Nth pixel (1 = all, 16 = every 16th)
-    HdCarWashFrameHash ComputeHash(unsigned int sampleRate = 16) const;
+    /// Authoritative determinism hash: hashes EVERY pixel of every AOV using
+    /// the raw IEEE-754 bits (no quantization, no subsampling). The only hash
+    /// whose equality may be used to claim a frame is "VERIFIED" deterministic.
+    HdCarWashFrameHash ComputeAuthoritativeHash() const;
+
+    /// Compute determinism hash. sampleRate == 1 hashes every pixel (in grid
+    /// order, plus corners/center). sampleRate > 1 is a FAST, NON-AUTHORITATIVE
+    /// preview that samples every Nth pixel; differences in unsampled pixels are
+    /// invisible, so it must not back a "VERIFIED" claim. Float AOVs are hashed
+    /// by raw IEEE-754 bits so 5th-decimal accumulation drift is detected.
+    /// @param sampleRate Sample every Nth pixel (1 = all).
+    HdCarWashFrameHash ComputeHash(unsigned int sampleRate = 1) const;
 };
 
 /// \class HdCarWashRasterizer

@@ -456,7 +456,9 @@ HdCarWashComfyClient::EncodeDepthBuffer(
     float range = maxDepth - minDepth;
     if (range < 0.001f) range = 1.0f;
 
-    for (size_t i = 0; i < depth.size(); i++) {
+    // Clamp to the allocation: writes index pixels[i], which is sized width*height.
+    const size_t pixelCount = std::min(depth.size(), static_cast<size_t>(width) * height);
+    for (size_t i = 0; i < pixelCount; i++) {
         float d = depth[i];
         if (d >= 1.0f) {
             pixels[i] = 255;  // Background = white (far)
@@ -479,7 +481,9 @@ HdCarWashComfyClient::EncodeNormalBuffer(
     // Convert normals to RGB PNG (standard normal map encoding)
     std::vector<uint8_t> pixels(width * height * 3);
 
-    for (size_t i = 0; i < normals.size(); i++) {
+    // Clamp to the allocation: writes pixels[i*3+0..2], sized width*height*3.
+    const size_t pixelCount = std::min(normals.size(), static_cast<size_t>(width) * height);
+    for (size_t i = 0; i < pixelCount; i++) {
         const GfVec3f& n = normals[i];
         // Normal map encoding: [-1,1] -> [0,255]
         pixels[i * 3 + 0] = static_cast<uint8_t>((n[0] * 0.5f + 0.5f) * 255.0f);
@@ -499,7 +503,9 @@ HdCarWashComfyClient::EncodeColorBuffer(
     // Convert color to RGBA PNG
     std::vector<uint8_t> pixels(width * height * 4);
 
-    for (size_t i = 0; i < color.size(); i++) {
+    // Clamp to the allocation: writes pixels[i*4+0..3], sized width*height*4.
+    const size_t pixelCount = std::min(color.size(), static_cast<size_t>(width) * height);
+    for (size_t i = 0; i < pixelCount; i++) {
         const GfVec4f& c = color[i];
         pixels[i * 4 + 0] = static_cast<uint8_t>(std::clamp(c[0], 0.0f, 1.0f) * 255.0f);
         pixels[i * 4 + 1] = static_cast<uint8_t>(std::clamp(c[1], 0.0f, 1.0f) * 255.0f);
@@ -534,7 +540,9 @@ HdCarWashComfyClient::EncodeIdBuffer(
     };
     constexpr int paletteSize = sizeof(palette) / sizeof(palette[0]);
 
-    for (size_t i = 0; i < ids.size(); i++) {
+    // Clamp to the allocation: writes pixels[i*3+0..2], sized width*height*3.
+    const size_t pixelCount = std::min(ids.size(), static_cast<size_t>(width) * height);
+    for (size_t i = 0; i < pixelCount; i++) {
         int id = ids[i];
         int colorIdx = (id < 0) ? 0 : ((id + 1) % paletteSize);
         pixels[i * 3 + 0] = palette[colorIdx][0];
