@@ -463,6 +463,11 @@ HdCarWashComfyClient::ProcessFrameAsync(
     // instead of being clobbered by a reset inside the worker. (#5)
     _cancelRequested = false;
 
+    // Clear progress so a new job starts at 0% rather than showing the previous
+    // job's final value. (#6)
+    _progressValue = 0;
+    _progressMax = 0;
+
     // CRITICAL: Use value/move capture to ensure data lifetime
     // Reference capture would be unsafe as framebuffer/params may be destroyed
     // before the async task completes
@@ -2702,6 +2707,31 @@ HdCarWashComfyClient::_ParseWebSocketMessage(const std::string& message, const s
     // {"type": "executing", "data": {"node": "N", "prompt_id": "xxx"}}
     // {"type": "executed", "data": {"node": "N", "output": {...}, "prompt_id": "xxx"}}
     // {"type": "execution_cached", "data": {"nodes": [...], "prompt_id": "xxx"}}
+    // {"type": "progress", "data": {"value": N, "max": M, "prompt_id": "xxx"}}
+
+    // Progress updates: capture these BEFORE the relevance filter below — older
+    // ComfyUI builds omit the prompt_id from progress messages. Only one job
+    // runs at a time (the render pass gates on _aiProcessing), so any progress
+    // we see is ours. (#6)
+    if (message.find("\"type\": \"progress\"") != std::string::npos ||
+        message.find("\"type\":\"progress\"") != std::string::npos) {
+        auto extractInt = [&message](const char* key, int fallback) -> int {
+            size_t k = message.find(key);
+            if (k == std::string::npos) return fallback;
+            size_t colon = message.find(':', k);
+            if (colon == std::string::npos) return fallback;
+            size_t p = colon + 1;
+            while (p < message.size() && (message[p] == ' ' || message[p] == '\t')) ++p;
+            try { return std::stoi(message.substr(p)); } catch (...) { return fallback; }
+        };
+        int v = extractInt("\"value\"", _progressValue.load());
+        int m = extractInt("\"max\"", _progressMax.load());
+        if (m > 0) {
+            _progressMax.store(m);
+            _progressValue.store(v);
+        }
+        return false;  // progress is not completion
+    }
 
     // Check if this message is for our prompt
     if (message.find(promptId) == std::string::npos &&

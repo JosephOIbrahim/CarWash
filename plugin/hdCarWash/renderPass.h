@@ -140,6 +140,9 @@ private:
 
     /// Last AI error already surfaced via TF_WARN, to de-duplicate warnings. (#5)
     std::string _lastWarnedError;
+
+    /// Last progress bucket logged via TF_STATUS, to throttle status spam. (#6)
+    int _lastProgressBucket = -1;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

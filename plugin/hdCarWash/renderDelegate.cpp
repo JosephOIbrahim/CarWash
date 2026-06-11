@@ -314,6 +314,39 @@ HdCarWashRenderDelegate::SetRenderSetting(TfToken const& key, VtValue const& val
     }
 }
 
+VtDictionary
+HdCarWashRenderDelegate::GetRenderStats() const
+{
+    // Surfaced by Solaris/Husk (percentDone drives the viewport/render-view
+    // progress indicator). Progress is pushed by the render pass from ComfyUI's
+    // WebSocket "progress" messages; lastError from AI failures. (#5/#6)
+    VtDictionary stats;
+    stats["rendererName"] = std::string("CarWash");
+    const double frac = static_cast<double>(_progressFraction.load());
+    stats["fractionDone"] = frac;
+    stats["percentDone"] = frac * 100.0;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_lastError.empty()) {
+            stats["carwash:lastError"] = _lastError;
+        }
+    }
+    return stats;
+}
+
+void
+HdCarWashRenderDelegate::SetProgress(float fraction)
+{
+    _progressFraction.store(fraction);
+}
+
+void
+HdCarWashRenderDelegate::SetLastError(const std::string& message)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _lastError = message;
+}
+
 // ==============================================================================
 // Resource Registry
 // ==============================================================================

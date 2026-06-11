@@ -128,6 +128,17 @@ public:
     }
     float GetCompletionTimeout() const { return _completionTimeoutSeconds; }
 
+    /// Current generation progress (0..1) from ComfyUI's WebSocket "progress"
+    /// messages, plus the raw step counts for display. (#6)
+    float GetProgressFraction() const {
+        int m = _progressMax.load();
+        if (m <= 0) return 0.0f;
+        float f = static_cast<float>(_progressValue.load()) / static_cast<float>(m);
+        return (f < 0.0f) ? 0.0f : ((f > 1.0f) ? 1.0f : f);
+    }
+    int GetProgressValue() const { return _progressValue.load(); }
+    int GetProgressMax() const { return _progressMax.load(); }
+
     /// Process a frame through ComfyUI
     /// @param framebuffer The AOV buffers from CPU rasterization
     /// @param params Style parameters for the AI
@@ -275,6 +286,10 @@ private:
     std::atomic<bool> _cancelRequested{false};
     bool _useWebSocket = true;  // Prefer WebSocket over polling
     float _completionTimeoutSeconds = 300.0f;  // per-job wait budget (#5)
+    // Generation progress from ComfyUI "progress" WS messages: written on the
+    // worker thread, read on the Hydra thread. (#6)
+    std::atomic<int> _progressValue{0};
+    std::atomic<int> _progressMax{0};
 
     // Client ID for ComfyUI session
     std::string _clientId;

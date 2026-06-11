@@ -112,6 +112,11 @@ HdCarWashRenderPass::~HdCarWashRenderPass()
 void
 HdCarWashRenderPass::_ReportAiError(const std::string& message)
 {
+    // Push to the delegate's render stats so Solaris can show it (#6), then
+    // TF_WARN to the console — but only once per distinct message. (#5)
+    if (_delegate) {
+        _delegate->SetLastError(message);
+    }
     if (message.empty() || message == _lastWarnedError) {
         return;
     }
@@ -379,6 +384,7 @@ HdCarWashRenderPass::_ExecutePhase1(
             if (result.success) {
                 debugLog << "AI processing successful!" << std::endl;
                 _lastWarnedError.clear();  // a later identical error will warn again (#5)
+                if (_delegate) _delegate->SetLastError("");  // clear the stats error (#6)
                 debugLog << "  Result size: " << result.styledImage.size() << " pixels" << std::endl;
                 TF_DEBUG_MSG(HD_CARWASH, "AI stylization complete, %zu pixels\n",
                              result.styledImage.size());
@@ -491,6 +497,7 @@ HdCarWashRenderPass::_ExecutePhase1(
         if (syncResult.success) {
             debugLog << "Sync AI completed successfully!" << std::endl;
             _lastWarnedError.clear();  // a later identical error will warn again (#5)
+            if (_delegate) _delegate->SetLastError("");  // clear the stats error (#6)
             std::lock_guard<std::mutex> lock(_resultMutex);
             size_t fbSize = _framebuffer.color.size();
             size_t aiSize = syncResult.styledImage.size();
@@ -554,6 +561,36 @@ HdCarWashRenderPass::_ExecutePhase1(
     } else {
         _converged = true;
         debugLog << "Converged: default behavior" << std::endl;
+    }
+
+    // Surface generation progress to the artist (#6): the delegate's render
+    // stats (Solaris/Husk percentDone) plus a throttled status line. During an
+    // in-flight job the fraction comes from ComfyUI's WebSocket "progress"
+    // messages (now received, since #5 fixed the endpoint); otherwise the frame
+    // is done (1.0) or idle (0.0).
+    {
+        const bool generating = _enableAI && _aiProcessing.load();
+        const float frac = generating
+            ? _comfyClient->GetProgressFraction()
+            : (_converged ? 1.0f : 0.0f);
+        if (_delegate) {
+            _delegate->SetProgress(frac);
+        }
+        if (generating) {
+            const int bucket = static_cast<int>(frac * 20.0f);  // ~5% steps
+            if (bucket != _lastProgressBucket) {
+                _lastProgressBucket = bucket;
+                TF_STATUS("hdCarWash: generating %d%% (step %d/%d)",
+                          static_cast<int>(frac * 100.0f),
+                          _comfyClient->GetProgressValue(),
+                          _comfyClient->GetProgressMax());
+                debugLog << "Progress: " << static_cast<int>(frac * 100.0f) << "% (step "
+                         << _comfyClient->GetProgressValue() << "/"
+                         << _comfyClient->GetProgressMax() << ")" << std::endl;
+            }
+        } else {
+            _lastProgressBucket = -1;  // reset so the next job reports from the start
+        }
     }
 
     debugLog << "Phase 1 complete, converged=" << _converged << std::endl;

@@ -10,12 +10,15 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
+#include "pxr/base/vt/dictionary.h"
 
 #include "api.h"
 #include "tokens.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -113,6 +116,11 @@ public:
     /// Called before each render pass.
     void CommitResources(HdChangeTracker* tracker) override;
 
+    /// Render statistics surfaced to Solaris/Husk: generation progress
+    /// (percentDone/fractionDone) and the last AI error, both pushed by the
+    /// render pass. (#6)
+    VtDictionary GetRenderStats() const override;
+
     /// Returns supported prim types.
     TfTokenVector const& GetSupportedRprimTypes() const override;
     TfTokenVector const& GetSupportedSprimTypes() const override;
@@ -136,6 +144,14 @@ public:
 
     /// Get the current render settings map (for render pass)
     HdRenderSettingsMap const& GetRenderSettingsMap() const;
+
+    /// Push generation progress (0..1) for GetRenderStats. Called by the render
+    /// pass each frame. (#6)
+    void SetProgress(float fraction);
+
+    /// Push the last AI error string for GetRenderStats (empty clears it).
+    /// Called by the render pass. (#5/#6)
+    void SetLastError(const std::string& message);
 
 private:
     /// Initialize the delegate with default settings
@@ -165,6 +181,12 @@ private:
 
     /// Mutex for thread safety
     mutable std::mutex _mutex;
+
+    /// Generation progress (0..1) and last AI error, surfaced via
+    /// GetRenderStats. _progressFraction is atomic (read on the render thread,
+    /// written from the pass); _lastError is guarded by _mutex. (#5/#6)
+    std::atomic<float> _progressFraction{0.0f};
+    std::string _lastError;
 
     // TODO Phase 4: Add cognitive engine member
     // std::unique_ptr<CognitiveEngine> _cognitiveEngine;
