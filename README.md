@@ -1,178 +1,161 @@
 # hdCarWash
 
-**AI-Powered Video Generation for Houdini via USD Hydra**
+**Scene-conditioned AI video generation, native to Houdini's Solaris viewport.**
 
-hdCarWash is a Houdini Hydra render delegate that bridges SideFX Houdini with cutting-edge AI video generation models. Render your 3D scenes directly to AI-generated video using LTX-2, AnimateDiff, and other diffusion models through ComfyUI.
-
----
-
-## Features
-
-- **Native Hydra Integration** — Appears as a standard renderer in Houdini's viewport and render settings
-- **LTX-2 19B Support** — State-of-the-art video generation with Gemma 3 12B text encoding
-- **Depth-Conditioned Generation** — Uses Houdini scene depth as control signal for consistent output
-- **Real-time Preview** — CPU rasterizer provides instant depth/normal previews
-- **Deterministic Pipeline** — Reproducible results with fixed seeds and batch-invariant processing
-- **WebSocket Architecture** — Asynchronous communication with ComfyUI for non-blocking renders
+hdCarWash is a Houdini/USD **Hydra render delegate** that rasterizes your scene on the CPU and turns it into AI-generated video through [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (LTX-2). It conditions the model on your **actual shaded render** — not just a depth pass — so the generated video is grounded in the scene's real composition, lighting, and color. It appears as a renderer inside Houdini's render settings and runs asynchronously, keeping the viewport responsive while frames generate.
 
 ---
 
 ## How It Works
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Houdini   │────▶│  hdCarWash  │────▶│   ComfyUI   │────▶│   Output    │
-│  USD Scene  │     │   Delegate  │     │    LTX-2    │     │   Video     │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-       │                   │                   │
-       │              WebSocket           AI Inference
-       │                   │                   │
-       ▼                   ▼                   ▼
-   Geometry          Depth Maps         25 Frame Video
-   Cameras           Control Images     1312×992 px
-   Lights            Prompts            25 FPS
+```mermaid
+flowchart LR
+    H["Houdini USD scene<br/>geometry · cameras · lights"] --> D["hdCarWash delegate"]
+    D --> R["CPU rasterizer<br/>color · depth · normal · id AOVs"]
+    R -->|"color.png (beauty) as conditioning"| C["ComfyUI · LTX-2 19B<br/>Gemma 3 12B text encoder"]
+    C --> O["25-frame sequence<br/>+ carwash.json sidecar"]
+    O --> V["viewport preview<br/>(frame 0)"]
 ```
 
-1. **Scene Export** — hdCarWash receives USD prims from Houdini's Hydra viewport
-2. **Rasterization** — CPU rasterizer generates depth and normal maps from scene geometry
-3. **Workflow Build** — Constructs LTX-2 workflow JSON with scene-derived control images
-4. **Submission** — Sends workflow to ComfyUI via WebSocket API
-5. **Generation** — LTX-2 generates video conditioned on depth maps and text prompts
-6. **Return** — Results displayed in Houdini viewport or saved to disk
+1. **Scene export** — the delegate receives USD prims from Houdini's Hydra viewport.
+2. **Rasterization** — a deterministic CPU rasterizer renders the scene to AOV buffers: shaded color, depth, world normals, and object/prim IDs.
+3. **Conditioning** — the shaded color buffer is uploaded to ComfyUI as the first-frame conditioning image (depth/normal AOVs are uploaded too, reserved for a future control branch).
+4. **Generation** — an LTX-2 image-to-video workflow generates a 25-frame clip conditioned on that image plus the text prompt.
+5. **Delivery** — every frame is downloaded and written to a per-generation directory with a metadata sidecar; frame 0 is shown in the viewport as a live preview.
 
----
+### The render loop
 
-## Requirements
+The pass only submits a generation when something the model actually consumes has changed, then settles — it does **not** regenerate an unchanging scene on every redraw.
 
-- **Houdini** 20.5+ or 21.0+ (with USD/Hydra support)
-- **ComfyUI** with LTX-2 nodes installed
-- **Models:**
-  - `ltx-2-19b-distilled-fp8_transformer_only.safetensors` (UNET)
-  - `gemma_3_12B_it_fp4_mixed.safetensors` (Text Encoder)
-  - `taeltx_2.safetensors` (VAE)
-- **Windows** 10/11 (64-bit)
-- **CUDA** capable GPU (RTX 3090+ recommended for 19B model)
-
----
-
-## Installation
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/JosephOIbrahim/hdCarWash.git
+```mermaid
+sequenceDiagram
+    participant Hydra
+    participant Pass as HdCarWashRenderPass
+    participant Raster as CPU Rasterizer
+    participant Comfy as ComfyUI (LTX-2)
+    Hydra->>Pass: _Execute()
+    Pass->>Raster: rasterize scene to AOVs
+    Pass->>Pass: conditioning hash (depth·normal·id·color) + style-param hash
+    alt conditioning or params changed, no job in flight
+        Pass->>Comfy: upload color.png, submit workflow
+        Note over Pass,Comfy: async — viewport keeps the CPU preview
+        Comfy-->>Pass: 25-frame result
+        Pass->>Pass: write sequence + sidecar, swap frame 0 into viewport
+    else unchanged
+        Pass->>Pass: converged — no resubmit
+    end
 ```
 
-### 2. Build the Plugin
+Change the camera, the geometry, a light, a material, or any prompt/seed/strength setting and the next frame re-triggers a generation; leave it alone and it converges. A failed or timed-out job converges rather than resubmit-looping.
 
-```bash
-cd hdCarWash
-mkdir build && cd build
-cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/Program Files/Side Effects Software/Houdini 21.0.729"
-cmake --build . --config Release
+### Output
+
+Each generation is written to a self-describing directory (default base `C:/CarWashRenders`):
+
+```
+C:/CarWashRenders/<promptId>/
+├── frame_0001.png … frame_0025.png   # the full sequence
+└── carwash.json                       # prompt, seed, steps, guidance, size, frameCount …
 ```
 
-### 3. Install Houdini Package
-
-Create `Documents/houdini21.0/packages/hdCarWash.json`:
-
-```json
-{
-    "env": [
-        {
-            "HOUDINI_PATH": {
-                "value": "C:/path/to/hdCarWash/plugin",
-                "method": "prepend"
-            }
-        },
-        {
-            "PXR_PLUGINPATH_NAME": {
-                "value": "C:/path/to/hdCarWash/plugin",
-                "method": "prepend"
-            }
-        }
-    ],
-    "path": "C:/path/to/hdCarWash/plugin"
-}
-```
-
-### 4. Deploy DLL
-
-Copy `build/plugin/hdCarWash/Release/hdCarWash.dll` to `plugin/lib/hdCarWash.dll`
-
-### 5. Download Models
-
-```powershell
-./download_models.ps1
-```
-
-Or manually place models in ComfyUI's `models/` directories.
-
----
-
-## Usage
-
-### Basic Workflow
-
-1. **Start ComfyUI** on port 8188 (default)
-
-2. **Launch Houdini** and create a LOP network
-
-3. **Build your scene** with geometry, cameras, and lights
-
-4. **Add Render Settings** node and select **"CarWash"** as the renderer
-
-5. **Configure prompts** in the render settings:
-   - Positive: `"photorealistic 3D render, cinematic lighting, sharp details"`
-   - Negative: `"blurry, low quality, distorted"`
-
-6. **Render** — Output appears in ComfyUI's output folder
-
-### Render Settings
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `positive_prompt` | (scene description) | What to generate |
-| `negative_prompt` | `"blurry, low quality"` | What to avoid |
-| `inference_steps` | 20 | Denoising steps |
-| `guidance_scale` | 7.5 | Prompt adherence |
-| `seed` | random | For reproducibility |
-| `video_length` | 25 | Frames to generate |
-| `frame_rate` | 25.0 | Output FPS |
+Import the sequence as an image/texture sequence; the sidecar records the parameters behind each render for versioning.
 
 ---
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Plugin["plugin/hdCarWash — C++ Hydra delegate"]
+        RD["renderDelegate<br/>render settings · backend · AOVs"]
+        RP["renderPass<br/>orchestration · convergence gate"]
+        RZ["rasterizer<br/>depth/normal/color/id AOVs"]
+        CC["comfyClient<br/>workflow build · WS/HTTP · sequence I/O"]
+        SUP["renderBuffer · mesh · camera · light · tokens"]
+    end
+    RD --> RP
+    RP --> RZ
+    RP --> CC
+    RP --> SUP
+    CC -->|"HTTP + WebSocket"| Comfy[("ComfyUI server")]
 ```
-plugin/
-├── hdCarWash/
-│   ├── comfyClient.cpp      # WebSocket client & workflow builder
-│   ├── renderDelegate.cpp   # Hydra delegate implementation
-│   ├── renderPass.cpp       # Render execution logic
-│   ├── rasterizer.cpp       # CPU depth/normal rasterizer
-│   ├── camera.cpp           # USD camera handling
-│   ├── mesh.cpp             # USD mesh processing
-│   └── ...
-├── lib/
-│   └── hdCarWash.dll        # Compiled plugin
-└── plugInfo.json            # Hydra registration
-```
-
-### Key Components
 
 | Component | Purpose |
 |-----------|---------|
-| **ComfyClient** | Manages WebSocket connection to ComfyUI, builds LTX-2 workflows |
-| **RenderDelegate** | Implements HdRenderDelegate interface for Hydra |
-| **RenderPass** | Executes render, coordinates rasterizer and ComfyUI submission |
-| **Rasterizer** | CPU-based depth and normal map generation |
+| **RenderDelegate** | Implements `HdRenderDelegate`; owns render settings (live edits via `SetRenderSetting`), backend selection, AOV descriptors |
+| **RenderPass** | Per-frame orchestration: rasterize → hash conditioning → gate AI submission → apply/converge |
+| **Rasterizer** | Deterministic CPU rasterizer producing color/depth/normal/id AOVs |
+| **ComfyClient** | Builds the LTX-2 workflow JSON, submits over HTTP/WebSocket, downloads the full result sequence |
+
+---
+
+## Requirements
+
+- **Houdini 21.0.729** (the pinned build target; 21.0+ with USD/Hydra should work)
+- **ComfyUI** with LTX-2 nodes installed, reachable on `localhost:8188`
+- **Models:**
+  - `ltx-2-19b-distilled-fp8_transformer_only.safetensors` (UNET)
+  - `gemma_3_12B_it_fp4_mixed.safetensors` (text encoder)
+  - `taeltx_2.safetensors` (VAE)
+- **Windows** 10/11 (64-bit)
+- **CUDA** GPU (RTX 3090+ recommended for the 19B model)
+
+---
+
+## Build & Deploy
+
+### 1. Build the plugin
+
+```bash
+cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_PREFIX_PATH="C:/Program Files/Side Effects Software/Houdini 21.0.729"
+cmake --build build --target hdCarWash --config Release
+```
+
+### 2. Deploy to Houdini
+
+```bash
+python deploy_hdcarwash.py            # build (if needed) + copy DLL/plugInfo/package
+python deploy_hdcarwash.py --skip-build   # deploy an already-built DLL
+```
+
+The deploy script copies `hdCarWash.dll` to `~/houdini21.0/dso/usd/hdCarWash/lib/`, installs `plugInfo.json` + resources, and writes the Houdini package that sets `PXR_PLUGINPATH_NAME`. It refuses to run while Houdini is open (the DLL would be locked).
+
+### 3. Download models
+
+```powershell
+./download_models.ps1
+```
+
+Or place the model files manually in ComfyUI's `models/` directories.
+
+---
+
+## Usage
+
+1. **Start ComfyUI** on port 8188.
+2. **Launch Houdini 21** and build a Solaris (LOP) scene with geometry, a camera, and lights.
+3. **Add a Render Settings LOP** and select **CarWash** as the renderer.
+4. **Set the prompt and parameters** (see the table below). Generation runs asynchronously; the viewport shows the CPU rasterization until the AI frame lands.
+5. Output frames are written under `C:/CarWashRenders/<promptId>/`.
+
+> **Driving settings today:** the Render Settings *tab* does not yet appear in the UI (the USD schema is not registered — see [Status](#status--known-limitations)). Until it does, set parameters via the `RenderSettings` prim's `carwash:*` attributes. The delegate reads live edits correctly once they reach it.
+
+### Render Settings
+
+| Parameter | Token | Default | Description |
+|-----------|-------|---------|-------------|
+| Prompt | `carwash:prompt` | photorealistic 3D render… | What to generate |
+| Negative prompt | `carwash:negativePrompt` | blurry, low quality, distorted | What to avoid |
+| Inference steps | `carwash:inferenceSteps` | 20 | Denoising steps |
+| Guidance scale | `carwash:guidanceScale` | 7.5 | Prompt adherence |
+| Seed | `carwash:seed` | 42 | Base seed (time-jittered unless deterministic) |
+| Conditioning strength | `carwash:controlNet:depthStrength` | 0.8 | LTXVImgToVideo strength on the color image |
+| Backend | `carwash:backend` | ltx2 | AI backend (ltx2 / flux / cosmos) |
 
 ---
 
 ## Model Configuration
-
-hdCarWash uses **LTX-2 19B Distilled** with **Gemma 3 12B** for text encoding:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -181,72 +164,50 @@ hdCarWash uses **LTX-2 19B Distilled** with **Gemma 3 12B** for text encoding:
 │ UNET:          ltx-2-19b-distilled-fp8_transformer_only        │
 │ Text Encoder:  LTXAVTextEncoderLoader + Gemma 3 12B (3840-dim) │
 │ VAE:           taeltx_2                                        │
-│ Resolution:    Up to 1312×992                                  │
-│ Frame Count:   25 frames                                       │
-│ Frame Rate:    25 FPS                                          │
+│ Resolution:    Up to 1312×992 (multiples of 32)               │
+│ Frame Count:   25 frames                                      │
+│ Frame Rate:    25 FPS                                         │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** LTX-2 19B requires 3840-dimensional text embeddings. The older T5 XXL encoder (2048-dim) is incompatible. Gemma 3 12B provides the correct embedding dimensions.
+> **Note:** LTX-2 19B requires 3840-dimensional text embeddings. The older T5 XXL encoder (2048-dim) is incompatible — use `LTXAVTextEncoderLoader` with `gemma_3_12B_it_fp4_mixed.safetensors`.
 
 ---
 
-## Workflows
+## Status & Known Limitations
 
-Pre-configured ComfyUI workflows are included in `workflows/`:
+hdCarWash is **pre-1.0**. The core artist loop works end-to-end — live settings, generate-once-and-converge, scene-conditioned generation, and full-sequence output — but the following are still in progress:
 
-| Workflow | Description |
-|----------|-------------|
-| `carwash_ltx2_img2vid.json` | LTX-2 image-to-video with depth conditioning |
-| `hdcarwash_sdxl_depth.json` | SDXL with ControlNet depth |
-| `carwash_animatediff_workflow.json` | AnimateDiff video generation |
+- **Render Settings tab not registered.** The `CarWashRenderSettingsAPI` USD schema isn't generated/registered yet, so the parameters don't appear as a UI tab. Drive settings via `RenderSettings` prim attributes for now.
+- **No in-viewport progress or error surfacing.** During a multi-minute generation the viewport just shows the CPU preview; failures (missing model, OOM, rejected workflow) currently go to `C:/Temp/hdcarwash_debug.txt` rather than the Houdini console.
+- **Fixed 60s completion timeout, no server-side cancel.** Long LTX-2 video renders can exceed it; abandoned jobs aren't yet interrupted on the server. The progress WebSocket endpoint also needs to be pointed at ComfyUI's `:8188/ws`.
+- **Sidecar records the base seed, not the jittered `noise_seed`.** So a non-deterministic render isn't bit-reproducible from the sidecar alone yet.
 
 ---
 
 ## Troubleshooting
 
-### "Shape mismatch: 128x2048 vs 3840x4096"
+**"Shape mismatch: 128x2048 vs 3840x4096"** — you're using T5 XXL instead of Gemma 3 12B. Ensure `LTXAVTextEncoderLoader` is used with `gemma_3_12B_it_fp4_mixed.safetensors`.
 
-You're using T5 XXL instead of Gemma 3 12B. Ensure `LTXAVTextEncoderLoader` is used with `gemma_3_12B_it_fp4_mixed.safetensors`.
+**Plugin not appearing in Houdini** — verify `~/houdini21.0/packages/hdCarWash.json` exists, that `PXR_PLUGINPATH_NAME` points at the folder containing `plugInfo.json`, and that `~/houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` exists. Re-run `python deploy_hdcarwash.py`.
 
-### Plugin not appearing in Houdini
+**ComfyUI connection failed** — confirm ComfyUI is running on `localhost:8188` and that the firewall allows local WebSocket/HTTP connections.
 
-1. Verify `hdCarWash.json` package file exists in `Documents/houdini21.0/packages/`
-2. Check `PXR_PLUGINPATH_NAME` points to folder containing `plugInfo.json`
-3. Ensure `plugin/lib/hdCarWash.dll` exists
-
-### ComfyUI connection failed
-
-1. Verify ComfyUI is running on `localhost:8188`
-2. Check firewall settings allow WebSocket connections
-3. Look for connection errors in Houdini console
-
-### Out of VRAM
-
-LTX-2 19B requires significant VRAM. Try:
-- Reduce resolution (768×512 minimum)
-- Use fp8 quantized model
-- Close other GPU applications
+**Out of VRAM** — reduce resolution, use the fp8 quantized model, and close other GPU applications.
 
 ---
 
 ## Development
 
-### Debug Logging
-
 Enable debug output:
-```cpp
-TF_DEBUG_CODES(
-    HD_CARWASH
-);
-```
 
-Set environment variable:
 ```bash
 set TF_DEBUG=HD_CARWASH
 ```
 
-### Running Tests
+Runtime diagnostics are written to `C:/Temp/hdcarwash_debug.txt` (the per-frame conditioning hash, convergence state, submission, and download/sequence logs all appear there).
+
+Run tests:
 
 ```bash
 cd tests
@@ -258,23 +219,17 @@ python -m pytest test_comfyui_nodes.py -v
 
 ## License
 
-This project is proprietary software. All rights reserved.
+Proprietary. All rights reserved. © 2026 Joseph O. Ibrahim.
 
 ---
 
 ## Acknowledgments
 
-- **SideFX** — Houdini and USD/Hydra framework
+- **SideFX** — Houdini and the USD/Hydra framework
 - **Lightricks** — LTX-2 video generation model
 - **Google** — Gemma 3 text encoder
-- **ComfyUI** — Node-based diffusion interface
+- **ComfyUI** — node-based diffusion interface
 
 ---
 
-## Contact
-
-For questions or support, please open an issue on GitHub.
-
----
-
-*Built with Houdini 21.0 | ComfyUI | LTX-2 19B | Gemma 3 12B*
+*Built with Houdini 21.0.729 · ComfyUI · LTX-2 19B · Gemma 3 12B*
