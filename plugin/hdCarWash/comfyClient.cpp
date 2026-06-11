@@ -1347,7 +1347,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     debugLog << "  Resolution: " << outWidth << "x" << outHeight << std::endl;
     debugLog << "  Video length: " << videoLength << " frames" << std::endl;
     debugLog << "  Control image: " << controlImageSubfolder << "/color.png" << std::endl;
-    debugLog << "  UNET: ltx-2-19b-distilled-fp8 | CLIP: Gemma 3 12B (via LTXAVTextEncoderLoader) | VAE: taeltx_2" << std::endl;
+    debugLog << "  UNET: ltx-2.3-22b-distilled-fp8 (transformer-only, input_scaled_v3) | CLIP: Gemma 3 12B | VAE: taeltx2_3" << std::endl;
 
     std::ostringstream json;
     json << "{\n";
@@ -1356,33 +1356,33 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
 
     int nodeId = 1;
 
-    // Node 1: UNETLoader - LTXv 13B model (diffusion model only)
+    // Node 1: UNETLoader - LTX-2.3 22B distilled transformer-only (diffusion_models/)
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"UNETLoader\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"unet_name\": \"LTX2\\\\ltx-2-19b-distilled-fp8_transformer_only.safetensors\",\n";
-    json << "        \"weight_dtype\": \"default\"\n";
+    json << "        \"unet_name\": \"ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors\",\n";
+    json << "        \"weight_dtype\": \"fp8_e4m3fn\"\n";
     json << "      }\n";
     json << "    },\n";
     int unetNode = nodeId++;
 
-    // Node 2: LTXAVTextEncoderLoader - Gemma 3 12B text encoder (required for LTX2 distilled models)
-    // Uses Gemma 3 12B fp4 with the dev checkpoint for config reference
+    // Node 2: LTXAVTextEncoderLoader - Gemma 3 12B text encoder (required for LTX-2.3 distilled)
+    // ckpt_name points to the full distilled checkpoint for tokenizer/projection config
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"LTXAVTextEncoderLoader\",\n";
     json << "      \"inputs\": {\n";
     json << "        \"text_encoder\": \"gemma_3_12B_it_fp4_mixed.safetensors\",\n";
-    json << "        \"ckpt_name\": \"ltx-2-19b-dev-fp8.safetensors\",\n";
+    json << "        \"ckpt_name\": \"ltx-2.3-22b-distilled-fp8.safetensors\",\n";
     json << "        \"device\": \"default\"\n";
     json << "      }\n";
     json << "    },\n";
     int clipNode = nodeId++;
 
-    // Node 3: VAELoader - LTX video VAE
+    // Node 3: VAELoader - LTX-2.3 video VAE (vae/)
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"VAELoader\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"vae_name\": \"LTX2\\\\taeltx_2.safetensors\"\n";
+    json << "        \"vae_name\": \"taeltx2_3.safetensors\"\n";
     json << "      }\n";
     json << "    },\n";
     int vaeNode = nodeId++;
