@@ -55,11 +55,13 @@ struct HDCARWASH_API HdCarWashRenderResult
 {
     bool success = false;
     std::string errorMessage;
-    std::vector<GfVec4f> styledImage;  // RGBA output
+    std::vector<GfVec4f> styledImage;  // RGBA output (frame 0 — viewport preview)
     unsigned int width = 0;
     unsigned int height = 0;
     std::string promptId;  // ComfyUI job ID for tracking
     float inferenceTimeMs = 0.0f;
+    unsigned int frameCount = 0;   // number of frames written to disk (#3)
+    std::string outputPath;        // per-generation directory holding the sequence + sidecar (#3)
 };
 
 /// \class HdCarWashComfyClient
@@ -118,6 +120,12 @@ public:
     /// Set the workflow template path
     void SetWorkflowPath(const std::string& path) { _workflowPath = path; }
 
+    /// Set the base directory for downloaded render sequences. Each generation
+    /// gets a `<outputDir>/<promptId>/` subfolder with frame_####.png + a
+    /// carwash.json sidecar. Should be wired to the carwash:outputDirectory
+    /// render setting (or $HIP) once that is plumbed. (#3)
+    void SetOutputDir(const std::string& dir) { _outputDir = dir; }
+
     /// Set the backend type (ltx2, flux, cosmos)
     void SetBackend(const TfToken& backend) { _backend = backend; }
 
@@ -165,10 +173,15 @@ private:
     /// Poll for workflow completion
     bool _WaitForCompletion(const std::string& promptId, float timeoutSeconds);
 
-    /// Download result image from ComfyUI
+    /// Download the full result sequence from ComfyUI. Writes every frame to a
+    /// per-generation directory (with a sidecar JSON) and returns the first
+    /// frame decoded as RGBA for the viewport preview. Sets frameCount and
+    /// outputDir to describe what was written. (#3)
     std::vector<GfVec4f> _DownloadResult(
         const std::string& promptId,
-        unsigned int& width, unsigned int& height);
+        const HdCarWashStyleParams& params,
+        unsigned int& width, unsigned int& height,
+        unsigned int& frameCount, std::string& outputDir);
 
     /// HTTP GET request
     std::string _HttpGet(const std::string& endpoint);
@@ -246,6 +259,10 @@ private:
     // ComfyUI input directory for control images
     // Default: C:\ComfyUI\input (standard ComfyUI location)
     std::string _comfyInputDir = "C:/ComfyUI/input";
+
+    // Base directory for downloaded render sequences (#3). Each generation
+    // writes <_outputDir>/<promptId>/frame_####.png + carwash.json.
+    std::string _outputDir = "C:/CarWashRenders";
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

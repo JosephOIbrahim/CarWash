@@ -18,6 +18,8 @@
 #include <cmath>
 #include <mutex>
 #include <ctime>
+#include <cstdio>      // std::snprintf for frame filenames (#3)
+#include <filesystem>  // write the downloaded frame sequence to disk (#3)
 
 // stb_image for robust PNG decoding (handles compressed PNGs)
 // See: https://github.com/nothings/stb
@@ -397,7 +399,8 @@ HdCarWashComfyClient::ProcessFrame(
     }
 
     // Download result
-    result.styledImage = _DownloadResult(promptId, result.width, result.height);
+    result.styledImage = _DownloadResult(promptId, params, result.width, result.height,
+                                         result.frameCount, result.outputPath);
     if (result.styledImage.empty()) {
         result.success = false;
         result.errorMessage = "Failed to download result image";
@@ -887,6 +890,41 @@ HdCarWashComfyClient::_SaveControlImages(
 
     bool success = true;
 
+    // Upload the shaded color (beauty) buffer as the LTX-2 first-frame
+    // conditioning image. LTXVImgToVideo animates this image, so it must be the
+    // scene's actual appearance — lighting, composition, color — not the
+    // grayscale depth map. Uploaded unconditionally (independent of the depth/
+    // normal control toggles) because it is the primary conditioning input; it
+    // also guarantees the subfolder is non-empty so the LTX-2 path doesn't fall
+    // back to SDXL. (#4)
+    if (!framebuffer.color.empty()) {
+        std::vector<uint8_t> colorPixels(framebuffer.width * framebuffer.height * 3);
+        auto to8 = [](float v) {
+            float clamped = std::min(1.0f, std::max(0.0f, v));
+            return static_cast<uint8_t>(clamped * 255.0f + 0.5f);
+        };
+        for (size_t i = 0; i < framebuffer.color.size(); i++) {
+            const GfVec4f& c = framebuffer.color[i];
+            colorPixels[i * 3 + 0] = to8(c[0]);
+            colorPixels[i * 3 + 1] = to8(c[1]);
+            colorPixels[i * 3 + 2] = to8(c[2]);
+        }
+
+        std::vector<uint8_t> png = EncodePNG(colorPixels.data(),
+                                             framebuffer.width, framebuffer.height, 3);
+
+        std::string uploadResponse = _UploadImageToComfyUI(png, "color.png", subfolder);
+
+        debugLog << "[_SaveControlImages] Color upload response: " << uploadResponse << std::endl;
+
+        if (uploadResponse.find("\"name\"") != std::string::npos) {
+            debugLog << "[_SaveControlImages] Uploaded color.png: " << png.size() << " bytes" << std::endl;
+        } else {
+            debugLog << "[_SaveControlImages] ERROR: Failed to upload color.png" << std::endl;
+            success = false;
+        }
+    }
+
     // Upload depth image via ComfyUI API
     if (params.useDepthControl && !framebuffer.depth.empty()) {
         // Convert depth to grayscale PNG bytes
@@ -1237,7 +1275,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     debugLog << "[_BuildWorkflowLTX2] Building LTX2 workflow JSON" << std::endl;
     debugLog << "  Resolution: " << outWidth << "x" << outHeight << std::endl;
     debugLog << "  Video length: " << videoLength << " frames" << std::endl;
-    debugLog << "  Control image: " << controlImageSubfolder << "/depth.png" << std::endl;
+    debugLog << "  Control image: " << controlImageSubfolder << "/color.png" << std::endl;
     debugLog << "  UNET: ltx-2-19b-distilled-fp8 | CLIP: Gemma 3 12B (via LTXAVTextEncoderLoader) | VAE: taeltx_2" << std::endl;
 
     std::ostringstream json;
@@ -1309,11 +1347,12 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "    },\n";
     int ltxvCondNode = nodeId++;
 
-    // Node 7: Load Image (Houdini depth)
+    // Node 7: Load Image (Houdini shaded beauty render — the scene's actual
+    // appearance, which the video model animates as its first frame). (#4)
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"LoadImage\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"image\": \"" << controlImageSubfolder << "/depth.png\"\n";
+    json << "        \"image\": \"" << controlImageSubfolder << "/color.png\"\n";
     json << "      }\n";
     json << "    },\n";
     int imageNode = nodeId++;
@@ -1532,7 +1571,9 @@ HdCarWashComfyClient::_WaitForCompletion(const std::string& promptId, float time
 std::vector<GfVec4f>
 HdCarWashComfyClient::_DownloadResult(
     const std::string& promptId,
-    unsigned int& width, unsigned int& height)
+    const HdCarWashStyleParams& params,
+    unsigned int& width, unsigned int& height,
+    unsigned int& frameCount, std::string& outputDir)
 {
     // DEBUG: Write to file for diagnosis
     std::ofstream debugLog;
@@ -1540,6 +1581,10 @@ HdCarWashComfyClient::_DownloadResult(
         debugLog.open("C:/Temp/hdcarwash_debug.txt", std::ios::app);  // gated: no hot-path I/O / workflow-JSON leak unless TF_DEBUG=HD_CARWASH (#5)
     }
     debugLog << "[_DownloadResult] promptId: " << promptId << std::endl;
+
+    // Define the out-params up front so every early-return path is well-formed.
+    frameCount = 0;
+    outputDir.clear();
 
     // Get output info from history
     std::string history = _HttpGet("/history/" + promptId);
@@ -1568,73 +1613,104 @@ HdCarWashComfyClient::_DownloadResult(
 
     debugLog << "[_DownloadResult] Found outputs section at position: " << outputsPos << std::endl;
 
-    // Now search for "filename" AFTER the outputs section
-    size_t pos = history.find("\"filename\"", outputsPos);
-    if (pos == std::string::npos) {
-        debugLog << "[_DownloadResult] ERROR: No filename in outputs section" << std::endl;
-        // Log a snippet around outputs for debugging
-        size_t snippetStart = outputsPos;
-        size_t snippetLen = std::min((size_t)500, history.size() - snippetStart);
-        debugLog << "[_DownloadResult] Outputs snippet: " << history.substr(snippetStart, snippetLen) << std::endl;
-        debugLog.close();
-        TF_WARN("No filename in outputs section");
-        return {};
-    }
+    // Iterate EVERY image entry in the outputs section, not just the first.
+    // The LTX-2 workflow generates a 25-frame video; previously 24 frames were
+    // produced server-side and silently discarded here. We now download the
+    // full sequence to a stable per-generation directory and keep the first
+    // frame as the viewport preview. (#3)
+    auto extractStringValue = [&history](size_t keyPos) -> std::string {
+        size_t colon = history.find(':', keyPos);
+        if (colon == std::string::npos) return "";
+        size_t q1 = history.find('"', colon);
+        if (q1 == std::string::npos) return "";
+        size_t q2 = history.find('"', q1 + 1);
+        if (q2 == std::string::npos) return "";
+        return history.substr(q1 + 1, q2 - q1 - 1);
+    };
 
-    pos = history.find("\"", pos + 11);
-    if (pos == std::string::npos) return {};
-
-    size_t endPos = history.find("\"", pos + 1);
-    if (endPos == std::string::npos) return {};
-
-    std::string filename = history.substr(pos + 1, endPos - pos - 1);
-
-    debugLog << "[_DownloadResult] Found filename: " << filename << std::endl;
-
-    // Also try to get subfolder
-    std::string subfolder = "";
-    size_t subPos = history.find("\"subfolder\"");
-    if (subPos != std::string::npos) {
-        subPos = history.find("\"", subPos + 12);
-        if (subPos != std::string::npos) {
-            size_t subEnd = history.find("\"", subPos + 1);
-            if (subEnd != std::string::npos) {
-                subfolder = history.substr(subPos + 1, subEnd - subPos - 1);
-            }
+    const std::string genDir = _outputDir + "/" + promptId;
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(genDir, ec);
+        if (ec) {
+            debugLog << "[_DownloadResult] WARNING: could not create output dir "
+                     << genDir << ": " << ec.message() << std::endl;
         }
     }
 
-    TF_DEBUG_MSG(HD_CARWASH, "Output file: %s/%s\n",
-                 subfolder.c_str(), filename.c_str());
+    std::string firstPngData;
+    std::string firstFilename;
+    unsigned int savedFrames = 0;
+    size_t searchPos = outputsPos;
 
-    // Build view URL
-    std::string viewUrl = "/view?filename=" + filename;
-    if (!subfolder.empty()) {
-        viewUrl += "&subfolder=" + subfolder;
+    while (true) {
+        size_t fnPos = history.find("\"filename\"", searchPos);
+        if (fnPos == std::string::npos) break;
+
+        std::string filename = extractStringValue(fnPos);
+        size_t nextFnPos = history.find("\"filename\"", fnPos + 10);
+
+        // The subfolder belongs to the same image entry, so it must appear
+        // after this filename and before the next one.
+        std::string subfolder;
+        size_t subPos = history.find("\"subfolder\"", fnPos);
+        if (subPos != std::string::npos &&
+            (nextFnPos == std::string::npos || subPos < nextFnPos)) {
+            subfolder = extractStringValue(subPos);
+        }
+
+        searchPos = fnPos + 10;
+        if (filename.empty()) continue;
+
+        std::string viewUrl = "/view?filename=" + filename;
+        if (!subfolder.empty()) viewUrl += "&subfolder=" + subfolder;
+
+        std::string framePng = _HttpGet(viewUrl);
+        if (framePng.size() < 24) {
+            debugLog << "[_DownloadResult] Skipping too-small frame '" << filename
+                     << "' (" << framePng.size() << " bytes)" << std::endl;
+            continue;
+        }
+
+        savedFrames++;
+
+        // Write the PNG bytes straight to disk (already encoded — no re-encode).
+        char frameName[32];
+        std::snprintf(frameName, sizeof(frameName), "/frame_%04u.png", savedFrames);
+        std::ofstream frameFile(genDir + frameName, std::ios::binary);
+        if (frameFile) {
+            frameFile.write(framePng.data(),
+                            static_cast<std::streamsize>(framePng.size()));
+            frameFile.close();
+        } else {
+            debugLog << "[_DownloadResult] WARNING: could not write "
+                     << genDir << frameName << std::endl;
+        }
+
+        if (firstPngData.empty()) {
+            firstPngData = framePng;
+            firstFilename = filename;
+        }
     }
 
-    debugLog << "[_DownloadResult] Downloading from: " << viewUrl << std::endl;
+    debugLog << "[_DownloadResult] Saved " << savedFrames << " frame(s) to " << genDir << std::endl;
+    TF_DEBUG_MSG(HD_CARWASH, "Saved %u frame(s) to %s\n", savedFrames, genDir.c_str());
 
-    // Download raw PNG bytes
-    std::string pngData = _HttpGet(viewUrl);
+    frameCount = savedFrames;
+    outputDir = (savedFrames > 0) ? genDir : std::string();
 
-    debugLog << "[_DownloadResult] Downloaded PNG size: " << pngData.size() << " bytes" << std::endl;
-
-    if (pngData.size() < 24) {
-        debugLog << "[_DownloadResult] ERROR: Image too small" << std::endl;
+    if (firstPngData.empty()) {
+        debugLog << "[_DownloadResult] ERROR: No usable frames downloaded" << std::endl;
         debugLog.close();
-        TF_WARN("Downloaded image too small: %zu bytes", pngData.size());
+        TF_WARN("No usable frames downloaded from ComfyUI");
         return {};
     }
 
-    // Log first few bytes to verify PNG signature
-    debugLog << "[_DownloadResult] First 8 bytes (hex): ";
-    for (size_t i = 0; i < std::min(pngData.size(), (size_t)8); i++) {
-        debugLog << std::hex << (int)(unsigned char)pngData[i] << " ";
-    }
-    debugLog << std::dec << std::endl;
-
-    TF_DEBUG_MSG(HD_CARWASH, "Downloaded PNG: %zu bytes\n", pngData.size());
+    // Decode the first frame for the viewport preview.
+    std::string pngData = firstPngData;
+    debugLog << "[_DownloadResult] Preview frame: " << firstFilename
+             << " (" << pngData.size() << " bytes)" << std::endl;
+    TF_DEBUG_MSG(HD_CARWASH, "Preview frame: %zu bytes\n", pngData.size());
 
     // Use stb_image to decode the PNG (handles all compression types)
     int imgWidth = 0, imgHeight = 0, imgChannels = 0;
@@ -1690,10 +1766,59 @@ HdCarWashComfyClient::_DownloadResult(
     // Free stb_image allocated memory
     stbi_image_free(pixels);
 
-    debugLog << "[_DownloadResult] SUCCESS: Decoded " << totalPixels << " pixels (" << width << "x" << height << ")" << std::endl;
+    // Sidecar metadata: makes each <promptId> directory a self-describing,
+    // reproducible render (generation history/versioning). Note the recorded
+    // seed is the BASE seed; when deterministic is false the workflow jitters it
+    // at submission, so the exact noise_seed is not captured here yet. (#3)
+    if (savedFrames > 0) {
+        auto escapeJson = [](const std::string& s) {
+            std::string r;
+            for (char c : s) {
+                switch (c) {
+                    case '"':  r += "\\\""; break;
+                    case '\\': r += "\\\\"; break;
+                    case '\n': r += "\\n";  break;
+                    case '\r': r += "\\r";  break;
+                    case '\t': r += "\\t";  break;
+                    default:   r += c;
+                }
+            }
+            return r;
+        };
+
+        std::ostringstream sidecar;
+        sidecar << "{\n";
+        sidecar << "  \"promptId\": \"" << escapeJson(promptId) << "\",\n";
+        sidecar << "  \"backend\": \"" << escapeJson(_backend.GetString()) << "\",\n";
+        sidecar << "  \"prompt\": \"" << escapeJson(params.prompt) << "\",\n";
+        sidecar << "  \"negativePrompt\": \"" << escapeJson(params.negativePrompt) << "\",\n";
+        sidecar << "  \"seed\": " << params.seed << ",\n";
+        sidecar << "  \"deterministic\": " << (params.deterministic ? "true" : "false") << ",\n";
+        sidecar << "  \"inferenceSteps\": " << params.inferenceSteps << ",\n";
+        sidecar << "  \"guidanceScale\": " << params.guidanceScale << ",\n";
+        sidecar << "  \"controlNetStrength\": " << params.controlNetStrength << ",\n";
+        sidecar << "  \"width\": " << width << ",\n";
+        sidecar << "  \"height\": " << height << ",\n";
+        sidecar << "  \"frameCount\": " << savedFrames << ",\n";
+        sidecar << "  \"frameRate\": 25.0\n";
+        sidecar << "}\n";
+
+        std::ofstream sidecarFile(genDir + "/carwash.json", std::ios::binary);
+        if (sidecarFile) {
+            sidecarFile << sidecar.str();
+            sidecarFile.close();
+            debugLog << "[_DownloadResult] Wrote sidecar: " << genDir << "/carwash.json" << std::endl;
+        } else {
+            debugLog << "[_DownloadResult] WARNING: could not write sidecar in " << genDir << std::endl;
+        }
+    }
+
+    debugLog << "[_DownloadResult] SUCCESS: Decoded " << totalPixels << " pixels (" << width << "x" << height << ")"
+             << ", sequence of " << savedFrames << " frame(s) in " << genDir << std::endl;
     debugLog.close();
 
-    TF_DEBUG_MSG(HD_CARWASH, "Successfully decoded %zu pixels from ComfyUI\n", totalPixels);
+    TF_DEBUG_MSG(HD_CARWASH, "Successfully decoded %zu pixels (preview); %u frame(s) saved\n",
+                 totalPixels, savedFrames);
 
     return result;
 }

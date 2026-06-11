@@ -121,8 +121,10 @@ void
 HdCarWashRenderDelegate::_ApplySettings(
     HdRenderSettingsMap const& settingsMap)
 {
+    // The base ctor (HdRenderDelegate(settingsMap)) has already stored these
+    // into the inherited _settingsMap, which GetRenderSettingsMap() returns;
+    // here we only mirror the two values we cache as typed members. (#1)
     std::lock_guard<std::mutex> lock(_mutex);
-    _settingsMap = settingsMap;
 
     // Apply backend setting
     auto backendIt = settingsMap.find(HdCarWashSettingsTokens->backend);
@@ -291,6 +293,25 @@ HdCarWashRenderDelegate::GetRenderSettingDescriptors() const
     });
 
     return settings;
+}
+
+void
+HdCarWashRenderDelegate::SetRenderSetting(TfToken const& key, VtValue const& value)
+{
+    // Chain to the base first: it owns the authoritative _settingsMap that
+    // GetRenderSettingsMap() returns and increments _settingsVersion so Hydra
+    // can detect the change. Skipping this was the root of the dead-settings
+    // bug — edits had nowhere to land that the render pass would read. (#1)
+    HdRenderDelegate::SetRenderSetting(key, value);
+
+    // Mirror the two settings we also keep as typed members for fast access.
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (key == HdCarWashSettingsTokens->backend && value.IsHolding<TfToken>()) {
+        _activeBackend = value.UncheckedGet<TfToken>();
+    } else if (key == HdCarWashSettingsTokens->deterministicMode &&
+               value.IsHolding<TfToken>()) {
+        _determinismMode = value.UncheckedGet<TfToken>();
+    }
 }
 
 // ==============================================================================

@@ -21,8 +21,10 @@
 #include "pxr/base/gf/half.h"       // GfHalf for Float16 conversion
 
 #include <algorithm>  // std::sort for deterministic mesh ordering, std::min/max
-#include <cstdint>    // uint8_t, int32_t
+#include <cstdint>    // uint8_t, int32_t, uint64_t
 #include <cmath>      // std::lround
+#include <cstddef>    // size_t
+#include <functional> // std::hash for the style-param cache key (#2)
 #include <fstream>    // Debug file logging
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -36,6 +38,28 @@ namespace {
             return it->second.UncheckedGet<T>();
         }
         return defaultValue;
+    }
+
+    // Stable hash of the style params that change a generation's output. The
+    // base seed is included, but NOT the time-jitter applied at submission, so
+    // an unchanged scene reads as cached rather than regenerated forever. (#2)
+    size_t HashStyleParams(const HdCarWashStyleParams& p) {
+        size_t h = 1469598103934665603ull;  // FNV-1a offset basis
+        auto mix = [&h](size_t v) {
+            h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        };
+        mix(std::hash<std::string>{}(p.prompt));
+        mix(std::hash<std::string>{}(p.negativePrompt));
+        mix(std::hash<int>{}(p.inferenceSteps));
+        mix(std::hash<float>{}(p.guidanceScale));
+        mix(std::hash<float>{}(p.controlNetStrength));
+        mix(std::hash<float>{}(p.normalControlNetStrength));
+        mix(std::hash<int>{}(p.seed));
+        mix(std::hash<bool>{}(p.useDepthControl));
+        mix(std::hash<bool>{}(p.useNormalControl));
+        mix(std::hash<bool>{}(p.useEdgeControl));
+        mix(std::hash<bool>{}(p.deterministic));
+        return h;
     }
 }
 
@@ -287,6 +311,29 @@ HdCarWashRenderPass::_ExecutePhase1(
     TF_DEBUG_MSG(HD_CARWASH, "Frame hash (pre-AI): 0x%016llx\n",
                  static_cast<unsigned long long>(frameHash.combined));
 
+    // Identity of the conditioning the AI actually consumes. Since #4 feeds the
+    // shaded color (beauty) buffer to the model as the first-frame image, the
+    // hash MUST include colorHash — otherwise a lighting or material edit (which
+    // changes shading but not depth/normal/id) would never re-trigger a new
+    // generation. At hash time the color buffer always holds the deterministic
+    // CPU render (the AI result is written later in this frame and re-rasterized
+    // before the next hash), so including it is stable for a static scene and
+    // does not loop — this relies on the rasterizer being frame-to-frame
+    // deterministic, which is a verified core property of the project. Paired
+    // with the style-param hash so prompt/seed/strength edits also count as new
+    // work. (#2 + #4)
+    uint64_t conditioningHash = frameHash.depthHash;
+    conditioningHash = (conditioningHash * 1099511628211ull) ^ frameHash.normalHash;
+    conditioningHash = (conditioningHash * 1099511628211ull) ^ frameHash.idHash;
+    conditioningHash = (conditioningHash * 1099511628211ull) ^ frameHash.colorHash;
+    const size_t paramsHash = HashStyleParams(_styleParams);
+    const bool conditioningChanged =
+        !_hasSubmittedOnce ||
+        conditioningHash != _lastConditioningHash ||
+        paramsHash != _lastParamsHash;
+    debugLog << "Conditioning: hash=0x" << std::hex << conditioningHash << std::dec
+             << " changed=" << (conditioningChanged ? "yes" : "no") << std::endl;
+
     // =========================================================================
     // AI STYLIZATION (Non-Blocking ComfyUI Integration)
     // =========================================================================
@@ -361,16 +408,24 @@ HdCarWashRenderPass::_ExecutePhase1(
         }
     }
 
-    // Launch new async AI processing if not already running
-    if (_enableAI && _comfyClient && !_aiProcessing.load()) {
+    // Launch new async AI processing only when there is genuinely new work:
+    // AI enabled, no job already in flight, and the conditioning or params
+    // changed since our last submission. The unchanged case is exactly what
+    // previously looped forever — every completed frame immediately resubmitted
+    // an identical 25-frame video generation. (#2)
+    if (_enableAI && _comfyClient && !_aiProcessing.load() && conditioningChanged) {
         debugLog << "Checking ComfyUI server availability..." << std::endl;
 
         if (_comfyClient->IsServerAvailable()) {
             debugLog << "ComfyUI server available, launching async processing..." << std::endl;
             TF_DEBUG_MSG(HD_CARWASH, "Launching async AI stylization\n");
 
-            // Mark as processing BEFORE launching async
+            // Mark as processing BEFORE launching async, and record the identity
+            // of what we're submitting so an unchanged next frame won't resubmit.
             _aiProcessing.store(true);
+            _hasSubmittedOnce = true;
+            _lastConditioningHash = conditioningHash;
+            _lastParamsHash = paramsHash;
 
             // Launch async with COPY of framebuffer and params (safe capture)
             // The ProcessFrameAsync uses value capture internally
@@ -383,6 +438,9 @@ HdCarWashRenderPass::_ExecutePhase1(
         }
     } else if (!_enableAI) {
         debugLog << "AI disabled" << std::endl;
+    } else if (!conditioningChanged && !_aiProcessing.load()) {
+        debugLog << "Conditioning unchanged since last submission — "
+                    "skipping regeneration (converged)" << std::endl;
     }
 
     debugLog << "AI processed this frame: " << (aiProcessed ? "yes" : "no")
@@ -453,8 +511,12 @@ HdCarWashRenderPass::_ExecutePhase1(
         _converged = true;
         debugLog << "Converged: sync mode completed" << std::endl;
     } else if (_progressiveRefine) {
-        // In progressive mode, converge only when AI processing is done
-        _converged = aiProcessed && !_aiProcessing.load();
+        // Converge once no AI job is in flight AND the current conditioning
+        // matches what we last submitted (nothing new to generate). Gating on
+        // the change flag rather than `aiProcessed` is what lets an idle scene
+        // settle — `aiProcessed` is only true on the single frame a result
+        // lands, so the old test could never hold after a relaunch. (#2)
+        _converged = !_aiProcessing.load() && !conditioningChanged;
         debugLog << "Progressive mode: converged=" << _converged << std::endl;
     } else {
         _converged = true;

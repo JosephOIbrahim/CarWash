@@ -123,6 +123,16 @@ private:
 
     /// Is the current frame converged?
     bool _converged;
+
+    /// AI-submission cache keys. Together they identify the last generation we
+    /// submitted: the conditioning the model actually consumes (scene
+    /// depth/normal/id hashes, excluding color — the AI result overwrites
+    /// color) and a hash of the style params. When the current frame matches
+    /// both, an unchanged scene converges instead of regenerating on every
+    /// redraw, which is what previously looped forever. (#2)
+    bool _hasSubmittedOnce = false;
+    uint64_t _lastConditioningHash = 0;
+    size_t _lastParamsHash = 0;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

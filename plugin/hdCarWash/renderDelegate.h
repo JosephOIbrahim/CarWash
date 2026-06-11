@@ -62,6 +62,14 @@ public:
     /// Returns the list of supported render settings and their defaults.
     HdRenderSettingDescriptorList GetRenderSettingDescriptors() const override;
 
+    /// Applies a render setting edit pushed from the scene (e.g. Solaris).
+    /// Chains to the base — which owns the authoritative _settingsMap and bumps
+    /// _settingsVersion for change detection — then mirrors the backend and
+    /// determinism values we also cache as typed members. Without this override,
+    /// edits landed only in the base map while the render pass read a frozen
+    /// derived copy, so live parameter changes never reached the renderer. (#1)
+    void SetRenderSetting(TfToken const& key, VtValue const& value) override;
+
     /// Returns a shared resource registry.
     HdResourceRegistrySharedPtr GetResourceRegistry() const override;
 
@@ -143,8 +151,11 @@ private:
     /// Resource registry (shared by all render passes)
     HdResourceRegistrySharedPtr _resourceRegistry;
 
-    /// Current render settings
-    HdRenderSettingsMap _settingsMap;
+    // Render settings live in the base HdRenderDelegate::_settingsMap (a
+    // protected member), mutated through SetRenderSetting() and read back via
+    // GetRenderSettingsMap(). We deliberately do NOT declare our own
+    // _settingsMap here: doing so shadowed the base member, so base-class
+    // setting edits never reached the copy the render pass read. (#1)
 
     /// Active backend type
     TfToken _activeBackend;
