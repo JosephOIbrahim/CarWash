@@ -1373,7 +1373,7 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "      \"inputs\": {\n";
     json << "        \"text_encoder\": \"gemma_3_12B_it_fp4_mixed.safetensors\",\n";
     json << "        \"ckpt_name\": \"ltx-2.3-22b-distilled-fp8.safetensors\",\n";
-    json << "        \"device\": \"default\"\n";
+    json << "        \"device\": \"cpu\"\n";  // Gemma 12B on CPU; 22B transformer fills 24GB VRAM
     json << "      }\n";
     json << "    },\n";
     int clipNode = nodeId++;
@@ -1558,7 +1558,10 @@ HdCarWashComfyClient::_SubmitWorkflow(const std::string& workflowJson)
     if (pos == std::string::npos) {
         debugLog << "[_SubmitWorkflow] ERROR: No prompt_id in response" << std::endl;
         debugLog.close();
-        TF_WARN("No prompt_id in ComfyUI response");
+        std::string snippet = response.empty()
+            ? "(empty - recv timeout?)"
+            : response.substr(0, 300);
+        TF_WARN("ComfyUI rejected workflow — no prompt_id in response: '%s'", snippet.c_str());
         return "";
     }
 
@@ -2044,8 +2047,9 @@ HdCarWashComfyClient::_HttpPost(const std::string& endpoint, const std::string& 
         return "";
     }
 
-    // Set socket timeouts (3 seconds for send/recv)
-    DWORD timeout = 3000;
+    // 15s recv timeout: ComfyUI can take several seconds to respond to /prompt
+    // when it's busy loading models. 3s was too short and silently returned "".
+    DWORD timeout = 15000;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
 
