@@ -1378,11 +1378,12 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     json << "    },\n";
     int clipNode = nodeId++;
 
-    // Node 3: VAELoader - LTX-2.3 video VAE (vae/)
+    // Node 3: VAELoader - LTX-2.3 full video VAE (32x spatial; tiny TAESD is 16x and
+    // causes LTXVImgToVideo shape mismatch: latent[:, :, :t.shape[2]] = t fails)
     json << "    \"" << nodeId << "\": {\n";
     json << "      \"class_type\": \"VAELoader\",\n";
     json << "      \"inputs\": {\n";
-    json << "        \"vae_name\": \"taeltx2_3.safetensors\"\n";
+    json << "        \"vae_name\": \"LTX23_video_vae_bf16.safetensors\"\n";
     json << "      }\n";
     json << "    },\n";
     int vaeNode = nodeId++;
