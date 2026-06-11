@@ -1332,11 +1332,24 @@ HdCarWashComfyClient::_BuildWorkflowLTX2(
     std::string positivePrompt = escapeJson(params.prompt);
     std::string negativePrompt = escapeJson(params.negativePrompt);
 
-    // Determine output dimensions (LTX2 works best with multiples of 32)
-    unsigned int outWidth = (framebuffer.width / 32) * 32;
+    // Determine output dimensions (LTX2 works best with multiples of 32).
+    // Cap at 768 px on the longest side: LTX-2.3 22B fp8 (~22 GB) leaves only
+    // ~2 GB VRAM headroom on a 24 GB card; 2048×1152 → 9,216 latent tokens →
+    // attention allocations at the sampler exceed the budget and OOM.
+    // 768 px max keeps the latent ≤ ~1,300 tokens, comfortably within headroom.
+    unsigned int outWidth  = (framebuffer.width  / 32) * 32;
     unsigned int outHeight = (framebuffer.height / 32) * 32;
-    if (outWidth < 64) outWidth = 768;
+    if (outWidth  < 64) outWidth  = 768;
     if (outHeight < 64) outHeight = 512;
+    {
+        const unsigned int kMaxDim = 768;
+        unsigned int longSide = std::max(outWidth, outHeight);
+        if (longSide > kMaxDim) {
+            float scale = static_cast<float>(kMaxDim) / static_cast<float>(longSide);
+            outWidth  = std::max((static_cast<unsigned int>(outWidth  * scale) / 32) * 32, 64u);
+            outHeight = std::max((static_cast<unsigned int>(outHeight * scale) / 32) * 32, 64u);
+        }
+    }
 
     // Video length: 9 frames minimum for LTX2, use 25 for ~1 second at 25fps
     // For single-frame mode, we still generate minimum frames but only use first
