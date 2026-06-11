@@ -43,7 +43,13 @@ class Config:
 
     # Target files
     DLL_TARGET = INSTALL_LIB / "hdCarWash.dll"
-    PLUGINFO_TARGET = INSTALL_RESOURCES / "plugInfo.json"
+    # plugInfo.json must sit at the plugin ROOT (not resources/): its
+    # LibraryPath "lib/hdCarWash.dll" is resolved relative to the plugInfo's own
+    # directory. With it in resources/, USD looked for the DLL at
+    # resources/lib/hdCarWash.dll (which doesn't exist) and the delegate failed
+    # to allocate ("unable to read library plugin"). Root + lib/ matches the
+    # working repo layout.
+    PLUGINFO_TARGET = INSTALL_ROOT / "plugInfo.json"
     PACKAGE_FILE = PACKAGES_DIR / "hdCarWash.json"
 
     # Debug log
@@ -204,7 +210,7 @@ def step_copy_pluginfo(log: Logger, config: Config) -> bool:
         return False
 
     try:
-        config.INSTALL_RESOURCES.mkdir(parents=True, exist_ok=True)
+        config.INSTALL_ROOT.mkdir(parents=True, exist_ok=True)
         shutil.copy2(config.PLUGINFO_SOURCE, config.PLUGINFO_TARGET)
         log.success(f"Copied: {config.PLUGINFO_TARGET.name}")
         log.debug(f"  From: {config.PLUGINFO_SOURCE}")
@@ -270,12 +276,14 @@ def step_create_package(log: Logger, config: Config) -> bool:
     """Create or verify the Houdini package file."""
     log.step("Verifying Package Configuration")
 
+    # PXR_PLUGINPATH_NAME points at the plugin ROOT (which holds plugInfo.json),
+    # NOT the resources/ subdir — see the PLUGINFO_TARGET note above.
     package_content = '''\
 {
     "env": [
         {
             "var": "PXR_PLUGINPATH_NAME",
-            "value": "$HOUDINI_USER_PREF_DIR/dso/usd/hdCarWash/resources",
+            "value": "$HOUDINI_USER_PREF_DIR/dso/usd/hdCarWash",
             "method": "append"
         }
     ]
@@ -284,18 +292,9 @@ def step_create_package(log: Logger, config: Config) -> bool:
 
     try:
         config.PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-        if config.PACKAGE_FILE.exists():
-            log.info(f"Package file exists: {config.PACKAGE_FILE.name}")
-            # Verify content
-            with open(config.PACKAGE_FILE, 'r') as f:
-                existing = f.read()
-            if "PXR_PLUGINPATH_NAME" in existing and "hdCarWash" in existing:
-                log.success("Package file verified")
-                return True
-            else:
-                log.warning("Package file may be outdated, updating...")
-
+        # Always (re)write rather than skipping an existing file as "verified":
+        # an older package may carry the broken ".../hdCarWash/resources" path,
+        # which a content-presence check would wrongly accept.
         with open(config.PACKAGE_FILE, 'w') as f:
             f.write(package_content)
         log.success(f"Created/updated: {config.PACKAGE_FILE.name}")
