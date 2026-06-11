@@ -81,6 +81,10 @@ private:
     /// Find the active camera
     HdCarWashCamera* _GetCamera(HdRenderPassStateSharedPtr const& renderPassState);
 
+    /// Surface an AI failure to the artist via TF_WARN, but only once per
+    /// distinct message so a persistent failure doesn't spam the console. (#5)
+    void _ReportAiError(const std::string& message);
+
     /// Owner delegate
     HdCarWashRenderDelegate* _delegate;
 
@@ -133,6 +137,9 @@ private:
     bool _hasSubmittedOnce = false;
     uint64_t _lastConditioningHash = 0;
     size_t _lastParamsHash = 0;
+
+    /// Last AI error already surfaced via TF_WARN, to de-duplicate warnings. (#5)
+    std::string _lastWarnedError;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

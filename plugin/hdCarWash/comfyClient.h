@@ -64,6 +64,19 @@ struct HDCARWASH_API HdCarWashRenderResult
     std::string outputPath;        // per-generation directory holding the sequence + sidecar (#3)
 };
 
+/// \enum HdCarWashWaitResult
+///
+/// Outcome of waiting for a ComfyUI job. Lets the caller report an accurate,
+/// actionable reason instead of always blaming a timeout. (#5)
+///
+enum class HdCarWashWaitResult
+{
+    Success,
+    Timeout,
+    ExecutionError,
+    Cancelled
+};
+
 /// \class HdCarWashComfyClient
 ///
 /// Client for communicating with ComfyUI server.
@@ -78,13 +91,15 @@ struct HDCARWASH_API HdCarWashRenderResult
 class HDCARWASH_API HdCarWashComfyClient
 {
 public:
-    /// Construct client with server URL
-    /// Construct client with server URL
+    /// Construct client with server URL.
     /// @param serverUrl ComfyUI HTTP server URL (default: http://127.0.0.1:8188)
-    /// @param wsUrl WebSocket URL for progress updates (default: ws://localhost:9999)
+    /// @param wsUrl WebSocket URL for progress updates. Leave empty to derive it
+    ///        from serverUrl (ws://host:port/ws) — the correct ComfyUI progress
+    ///        endpoint. The old ws://localhost:9999 default pointed at the
+    ///        Synapse automation server, not ComfyUI. (#5)
     explicit HdCarWashComfyClient(
         const std::string& serverUrl = "http://127.0.0.1:8188",
-        const std::string& wsUrl = "ws://localhost:9999");
+        const std::string& wsUrl = "");
 
     ~HdCarWashComfyClient();
 
@@ -98,8 +113,20 @@ public:
     /// Get server URL
     const std::string& GetServerUrl() const { return _serverUrl; }
 
-    /// Set server URL
-    void SetServerUrl(const std::string& url) { _serverUrl = url; }
+    /// Set server URL. Also re-derives the WebSocket progress URL from it, so
+    /// both endpoints stay on the same host:port. (#5)
+    void SetServerUrl(const std::string& url) {
+        _serverUrl = url;
+        _wsUrl = _DeriveWsUrl(url);
+    }
+
+    /// Set the per-job completion timeout in seconds. Values <= 0 fall back to
+    /// the default. LTX-2 19B video routinely needs minutes, so the default is
+    /// 300s rather than the old hardcoded 60s. (#5)
+    void SetCompletionTimeout(float seconds) {
+        _completionTimeoutSeconds = (seconds > 0.0f) ? seconds : 300.0f;
+    }
+    float GetCompletionTimeout() const { return _completionTimeoutSeconds; }
 
     /// Process a frame through ComfyUI
     /// @param framebuffer The AOV buffers from CPU rasterization
@@ -170,8 +197,17 @@ private:
     /// Submit workflow to ComfyUI and get prompt ID
     std::string _SubmitWorkflow(const std::string& workflowJson);
 
-    /// Poll for workflow completion
-    bool _WaitForCompletion(const std::string& promptId, float timeoutSeconds);
+    /// Wait for workflow completion, distinguishing success / timeout /
+    /// execution-error / cancellation so the caller can report the real reason. (#5)
+    HdCarWashWaitResult _WaitForCompletion(const std::string& promptId, float timeoutSeconds);
+
+    /// Derive the ComfyUI WebSocket progress URL (ws://host:port/ws) from an
+    /// http(s) server URL. (#5)
+    std::string _DeriveWsUrl(const std::string& serverUrl) const;
+
+    /// Best-effort POST /interrupt so an abandoned (timed-out/cancelled) job
+    /// stops pinning the GPU server-side. (#5)
+    void _Interrupt();
 
     /// Download the full result sequence from ComfyUI. Writes every frame to a
     /// per-generation directory (with a sidecar JSON) and returns the first
@@ -238,6 +274,7 @@ private:
     TfToken _backend;
     std::atomic<bool> _cancelRequested{false};
     bool _useWebSocket = true;  // Prefer WebSocket over polling
+    float _completionTimeoutSeconds = 300.0f;  // per-job wait budget (#5)
 
     // Client ID for ComfyUI session
     std::string _clientId;

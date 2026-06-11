@@ -70,7 +70,7 @@ HdCarWashRenderPass::HdCarWashRenderPass(
     : HdRenderPass(index, collection)
     , _delegate(delegate)
     , _rasterizer(std::make_unique<HdCarWashRasterizer>())
-    , _comfyClient(std::make_unique<HdCarWashComfyClient>("http://127.0.0.1:8188", "ws://localhost:9999"))
+    , _comfyClient(std::make_unique<HdCarWashComfyClient>("http://127.0.0.1:8188"))  // WS URL derived from server (#5)
     , _styleParams()
     , _enableAI(true)  // Enable AI by default, will gracefully fallback if unavailable
     , _frameNumber(0)
@@ -98,7 +98,25 @@ HdCarWashRenderPass::HdCarWashRenderPass(
 
 HdCarWashRenderPass::~HdCarWashRenderPass()
 {
+    // Cancel any in-flight AI job BEFORE the _pendingAiResult future is
+    // destroyed. Otherwise the future's destructor blocks the UI thread until
+    // the job finishes (up to the full completion timeout) whenever the artist
+    // stops the render or switches renderers. CancelPending() also POSTs
+    // /interrupt to stop the server-side job. (#5)
+    if (_comfyClient) {
+        _comfyClient->CancelPending();
+    }
     TF_DEBUG_MSG(HD_CARWASH, "HdCarWashRenderPass destroyed\n");
+}
+
+void
+HdCarWashRenderPass::_ReportAiError(const std::string& message)
+{
+    if (message.empty() || message == _lastWarnedError) {
+        return;
+    }
+    _lastWarnedError = message;
+    TF_WARN("hdCarWash: %s", message.c_str());
 }
 
 bool
@@ -212,6 +230,17 @@ HdCarWashRenderPass::_ExecutePhase1(
         HdCarWashSettingsTokens->syncRenderMode, _syncRenderMode);
     _progressiveRefine = GetSetting<bool>(settings,
         HdCarWashSettingsTokens->progressiveRefine, _progressiveRefine);
+
+    // (#5) Completion timeout + ComfyUI server URL from settings. Defaults
+    // preserve current behavior; SetServerUrl also re-derives the WebSocket
+    // progress URL so both endpoints track the same host:port.
+    _comfyClient->SetCompletionTimeout(GetSetting<float>(settings,
+        HdCarWashSettingsTokens->comfyuiTimeoutSeconds, _comfyClient->GetCompletionTimeout()));
+    std::string serverUrl = GetSetting<std::string>(settings,
+        HdCarWashSettingsTokens->comfyuiServerUrl, _comfyClient->GetServerUrl());
+    if (serverUrl != _comfyClient->GetServerUrl()) {
+        _comfyClient->SetServerUrl(serverUrl);
+    }
 
     debugLog << "Render mode: enableAI=" << _enableAI
              << ", sync=" << _syncRenderMode
@@ -349,6 +378,7 @@ HdCarWashRenderPass::_ExecutePhase1(
 
             if (result.success) {
                 debugLog << "AI processing successful!" << std::endl;
+                _lastWarnedError.clear();  // a later identical error will warn again (#5)
                 debugLog << "  Result size: " << result.styledImage.size() << " pixels" << std::endl;
                 TF_DEBUG_MSG(HD_CARWASH, "AI stylization complete, %zu pixels\n",
                              result.styledImage.size());
@@ -402,6 +432,7 @@ HdCarWashRenderPass::_ExecutePhase1(
                 }
             } else {
                 debugLog << "AI processing failed: " << result.errorMessage << std::endl;
+                _ReportAiError(result.errorMessage);  // surface to the Houdini console (#5)
             }
         } else {
             debugLog << "AI processing still in progress..." << std::endl;
@@ -459,6 +490,7 @@ HdCarWashRenderPass::_ExecutePhase1(
 
         if (syncResult.success) {
             debugLog << "Sync AI completed successfully!" << std::endl;
+            _lastWarnedError.clear();  // a later identical error will warn again (#5)
             std::lock_guard<std::mutex> lock(_resultMutex);
             size_t fbSize = _framebuffer.color.size();
             size_t aiSize = syncResult.styledImage.size();
@@ -491,6 +523,7 @@ HdCarWashRenderPass::_ExecutePhase1(
             }
         } else {
             debugLog << "Sync AI failed: " << syncResult.errorMessage << std::endl;
+            _ReportAiError(syncResult.errorMessage);  // surface to the Houdini console (#5)
         }
     }
 

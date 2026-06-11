@@ -324,6 +324,13 @@ HdCarWashComfyClient::HdCarWashComfyClient(const std::string& serverUrl,
     , _clientId(GenerateClientId())
     , _wsConnected(false)
 {
+    // Derive the WebSocket progress URL from the server URL unless one was
+    // explicitly provided — the old ws://localhost:9999 default pointed at the
+    // Synapse automation server, not ComfyUI's :8188/ws progress socket. (#5)
+    if (wsUrl.empty()) {
+        _wsUrl = _DeriveWsUrl(serverUrl);
+    }
+
 #ifdef _WIN32
     // Initialize Winsock
     WSADATA wsaData;
@@ -332,7 +339,7 @@ HdCarWashComfyClient::HdCarWashComfyClient(const std::string& serverUrl,
 #endif
 
     TF_DEBUG_MSG(HD_CARWASH, "ComfyClient initialized: %s, ws: %s (client: %s)\n",
-                 serverUrl.c_str(), wsUrl.c_str(), _clientId.c_str());
+                 serverUrl.c_str(), _wsUrl.c_str(), _clientId.c_str());
 }
 
 HdCarWashComfyClient::~HdCarWashComfyClient()
@@ -360,7 +367,9 @@ HdCarWashComfyClient::ProcessFrame(
     const HdCarWashStyleParams& params)
 {
     HdCarWashRenderResult result;
-    _cancelRequested = false;  // reset per-frame so a prior cancel doesn't permanently disable the client (#5)
+    // NOTE: the cancel flag is reset in ProcessFrameAsync BEFORE launch, not
+    // here — resetting here would clobber a cancel issued (e.g. by the
+    // render-pass destructor) between launch and the worker starting. (#5)
     auto startTime = std::chrono::high_resolution_clock::now();
 
     TF_DEBUG_MSG(HD_CARWASH, "ProcessFrame: %dx%d, prompt='%s'\n",
@@ -382,21 +391,49 @@ HdCarWashComfyClient::ProcessFrame(
         return result;
     }
 
+    if (_cancelRequested) { result.errorMessage = "Render cancelled"; return result; }
+
     // Submit to ComfyUI
     std::string promptId = _SubmitWorkflow(workflow);
     if (promptId.empty()) {
         result.success = false;
-        result.errorMessage = "Failed to submit workflow to ComfyUI";
+        result.errorMessage = "ComfyUI rejected the workflow (check that the LTX-2 models and nodes are installed)";
         return result;
     }
     result.promptId = promptId;
 
-    // Wait for completion
-    if (!_WaitForCompletion(promptId, 60.0f)) {
+    if (_cancelRequested) { _Interrupt(); result.errorMessage = "Render cancelled"; return result; }
+
+    // Wait for completion. Timeout is configurable (default 300s) — the old
+    // hardcoded 60s was unrealistic for 19B video. Distinguish the failure mode
+    // so the artist gets an actionable message, and interrupt abandoned jobs so
+    // they stop pinning the GPU. (#5)
+    HdCarWashWaitResult waitResult = _WaitForCompletion(promptId, _completionTimeoutSeconds);
+    if (waitResult != HdCarWashWaitResult::Success) {
         result.success = false;
-        result.errorMessage = "Workflow execution timed out";
+        switch (waitResult) {
+            case HdCarWashWaitResult::Timeout:
+                result.errorMessage = "ComfyUI did not finish within "
+                    + std::to_string(static_cast<int>(_completionTimeoutSeconds))
+                    + "s (raise carwash:comfyui:timeoutSeconds, or check GPU/VRAM)";
+                _Interrupt();
+                break;
+            case HdCarWashWaitResult::ExecutionError:
+                result.errorMessage = "ComfyUI reported an execution error "
+                    "(check model files, node availability, and VRAM)";
+                break;
+            case HdCarWashWaitResult::Cancelled:
+                result.errorMessage = "Render cancelled";
+                _Interrupt();
+                break;
+            default:
+                result.errorMessage = "Workflow did not complete";
+                break;
+        }
         return result;
     }
+
+    if (_cancelRequested) { result.errorMessage = "Render cancelled"; return result; }
 
     // Download result
     result.styledImage = _DownloadResult(promptId, params, result.width, result.height,
@@ -421,6 +458,11 @@ HdCarWashComfyClient::ProcessFrameAsync(
     const HdCarWashFramebuffer& framebuffer,
     const HdCarWashStyleParams& params)
 {
+    // Reset the cancel flag HERE, before launching the worker, so a cancel
+    // issued after this point (e.g. from the render-pass destructor) sticks
+    // instead of being clobbered by a reset inside the worker. (#5)
+    _cancelRequested = false;
+
     // CRITICAL: Use value/move capture to ensure data lifetime
     // Reference capture would be unsafe as framebuffer/params may be destroyed
     // before the async task completes
@@ -434,6 +476,30 @@ void
 HdCarWashComfyClient::CancelPending()
 {
     _cancelRequested = true;
+    _Interrupt();  // also stop the in-flight server job, not just our wait loop (#5)
+}
+
+void
+HdCarWashComfyClient::_Interrupt()
+{
+    // Best-effort: tell ComfyUI to stop the currently running prompt so an
+    // abandoned (timed-out/cancelled) job stops pinning the GPU. Uses the
+    // timeout-hardened _HttpPost, so it never blocks teardown for long. (#5)
+    _HttpPost("/interrupt", "");
+    TF_DEBUG_MSG(HD_CARWASH, "Posted /interrupt to ComfyUI\n");
+}
+
+std::string
+HdCarWashComfyClient::_DeriveWsUrl(const std::string& serverUrl) const
+{
+    // http(s)://host:port[/...]  ->  ws://host:port/ws (ComfyUI progress socket)
+    std::string hostPort = serverUrl;
+    if (hostPort.rfind("https://", 0) == 0)     hostPort = hostPort.substr(8);
+    else if (hostPort.rfind("http://", 0) == 0) hostPort = hostPort.substr(7);
+    size_t slash = hostPort.find('/');
+    if (slash != std::string::npos) hostPort = hostPort.substr(0, slash);
+    if (hostPort.empty()) hostPort = "127.0.0.1:8188";
+    return "ws://" + hostPort + "/ws";
 }
 
 // =============================================================================
@@ -1512,15 +1578,14 @@ HdCarWashComfyClient::_SubmitWorkflow(const std::string& workflowJson)
     return promptId;
 }
 
-bool
+HdCarWashWaitResult
 HdCarWashComfyClient::_WaitForCompletion(const std::string& promptId, float timeoutSeconds)
 {
     // Try WebSocket first for real-time updates
     if (_useWebSocket) {
-        bool result = _WaitForCompletionWebSocket(promptId, timeoutSeconds);
-        if (result || _cancelRequested) {
-            return result;
-        }
+        bool wsOk = _WaitForCompletionWebSocket(promptId, timeoutSeconds);
+        if (_cancelRequested) return HdCarWashWaitResult::Cancelled;
+        if (wsOk) return HdCarWashWaitResult::Success;
         // WebSocket failed, fall back to polling
         TF_DEBUG_MSG(HD_CARWASH, "WebSocket unavailable, falling back to HTTP polling\n");
     }
@@ -1534,7 +1599,7 @@ HdCarWashComfyClient::_WaitForCompletion(const std::string& promptId, float time
         float elapsed = std::chrono::duration<float>(now - startTime).count();
         if (elapsed > timeoutSeconds) {
             TF_DEBUG_MSG(HD_CARWASH, "WaitForCompletion: timeout after %.1fs\n", elapsed);
-            return false;
+            return HdCarWashWaitResult::Timeout;
         }
 
         // Poll history endpoint
@@ -1551,21 +1616,22 @@ HdCarWashComfyClient::_WaitForCompletion(const std::string& promptId, float time
 
         if (hasOutputs || hasSuccess) {
             TF_DEBUG_MSG(HD_CARWASH, "WaitForCompletion: success after %.1fs\n", elapsed);
-            return true;
+            return HdCarWashWaitResult::Success;
         }
 
-        // Check for error status
+        // Check for error status (e.g. VRAM exhaustion, node failure) — report
+        // it as an execution error, not a timeout, so the message is accurate.
         if (response.find("\"status_str\": \"error\"") != std::string::npos ||
             response.find("\"status_str\":\"error\"") != std::string::npos) {
-            TF_WARN("ComfyUI workflow error detected");
-            return false;
+            TF_DEBUG_MSG(HD_CARWASH, "WaitForCompletion: ComfyUI reported execution error\n");
+            return HdCarWashWaitResult::ExecutionError;
         }
 
         // Wait before polling again
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
-    return false;
+    return HdCarWashWaitResult::Cancelled;
 }
 
 std::vector<GfVec4f>
@@ -2097,6 +2163,13 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
         return "";
     }
 
+    // Socket timeouts so a stalled upload can't hang the AI worker (and thus
+    // render-pass teardown) forever. This was the one path that could produce a
+    // true permanent hang — it had a blocking connect and unbounded recv. (#5)
+    DWORD timeout = 3000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+
     struct addrinfo hints = {}, *result = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -2106,12 +2179,38 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
         return "";
     }
 
-    if (connect(sock, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
-        freeaddrinfo(result);
-        closesocket(sock);
-        return "";
+    // Non-blocking connect with a 3s bound (same pattern as _HttpPost).
+    u_long nonBlocking = 1;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
+    int connectResult = connect(sock, result->ai_addr, (int)result->ai_addrlen);
+    if (connectResult == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK) {
+            fd_set writeSet, exceptSet;
+            FD_ZERO(&writeSet);
+            FD_ZERO(&exceptSet);
+            FD_SET(sock, &writeSet);
+            FD_SET(sock, &exceptSet);
+            struct timeval tv;
+            tv.tv_sec = 3;
+            tv.tv_usec = 0;
+            int selectResult = select(0, nullptr, &writeSet, &exceptSet, &tv);
+            if (selectResult <= 0 || FD_ISSET(sock, &exceptSet)) {
+                freeaddrinfo(result);
+                closesocket(sock);
+                return "";
+            }
+        } else {
+            freeaddrinfo(result);
+            closesocket(sock);
+            return "";
+        }
     }
     freeaddrinfo(result);
+
+    // Back to blocking mode for send/recv (now bounded by SO_*TIMEO above).
+    nonBlocking = 0;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
 
     // Build multipart/form-data body
     std::string boundary = "----HdCarWashBoundary" + std::to_string(
@@ -2158,11 +2257,24 @@ HdCarWashComfyClient::_UploadImageToComfyUI(
 
     std::string headerStr = headers.str();
 
-    // Send request in parts
-    send(sock, headerStr.c_str(), (int)headerStr.size(), 0);
-    send(sock, bodyPrefix.c_str(), (int)bodyPrefix.size(), 0);
-    send(sock, reinterpret_cast<const char*>(pngData.data()), (int)pngData.size(), 0);
-    send(sock, suffixStr.c_str(), (int)suffixStr.size(), 0);
+    // Send request in parts, checking every send and handling partial sends of
+    // the (potentially multi-MB) PNG body. A failed/timed-out send returns "".
+    auto sendAll = [sock](const char* data, int len) -> bool {
+        int sent = 0;
+        while (sent < len) {
+            int n = send(sock, data + sent, len - sent, 0);
+            if (n == SOCKET_ERROR || n == 0) return false;
+            sent += n;
+        }
+        return true;
+    };
+    if (!sendAll(headerStr.c_str(), (int)headerStr.size()) ||
+        !sendAll(bodyPrefix.c_str(), (int)bodyPrefix.size()) ||
+        !sendAll(reinterpret_cast<const char*>(pngData.data()), (int)pngData.size()) ||
+        !sendAll(suffixStr.c_str(), (int)suffixStr.size())) {
+        closesocket(sock);
+        return "";
+    }
 
     // Receive response
     std::string response;
