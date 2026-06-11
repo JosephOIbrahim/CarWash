@@ -2,7 +2,7 @@
 
 **Scene-conditioned AI video generation, native to Houdini's Solaris viewport.**
 
-hdCarWash is a Houdini/USD **Hydra render delegate** that rasterizes your scene on the CPU and turns it into AI-generated video through [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (LTX-2). It conditions the model on your **actual shaded render** — not just a depth pass — so the generated video is grounded in the scene's real composition, lighting, and color. It appears as a renderer inside Houdini's render settings and runs asynchronously, keeping the viewport responsive while frames generate.
+hdCarWash is a Houdini/USD **Hydra render delegate** that rasterizes your scene on the CPU and turns it into AI-generated video through [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (LTX-2.3 22B distilled). It conditions the model on your **actual shaded render** — not just a depth pass — so the generated video is grounded in the scene's real composition, lighting, and color. It appears as a renderer inside Houdini's render settings and runs asynchronously, keeping the viewport responsive while frames generate.
 
 ---
 
@@ -12,16 +12,16 @@ hdCarWash is a Houdini/USD **Hydra render delegate** that rasterizes your scene 
 flowchart LR
     H["Houdini USD scene<br/>geometry · cameras · lights"] --> D["hdCarWash delegate"]
     D --> R["CPU rasterizer<br/>color · depth · normal · id AOVs"]
-    R -->|"color.png (beauty) as conditioning"| C["ComfyUI · LTX-2 19B<br/>Gemma 3 12B text encoder"]
+    R -->|"color.png (beauty) as conditioning"| C["ComfyUI · LTX-2.3 22B distilled<br/>Gemma 3 12B (CPU) + LTX VAE (GPU)"]
     C --> O["25-frame sequence<br/>+ carwash.json sidecar"]
-    O --> V["viewport preview<br/>(frame 0)"]
+    O --> V["viewport preview + live progress<br/>(frame 0 · % bar in render stats)"]
 ```
 
 1. **Scene export** — the delegate receives USD prims from Houdini's Hydra viewport.
 2. **Rasterization** — a deterministic CPU rasterizer renders the scene to AOV buffers: shaded color, depth, world normals, and object/prim IDs.
 3. **Conditioning** — the shaded color buffer is uploaded to ComfyUI as the first-frame conditioning image (depth/normal AOVs are uploaded too, reserved for a future control branch).
-4. **Generation** — an LTX-2 image-to-video workflow generates a 25-frame clip conditioned on that image plus the text prompt.
-5. **Delivery** — every frame is downloaded and written to a per-generation directory with a metadata sidecar; frame 0 is shown in the viewport as a live preview.
+4. **Generation** — an LTX-2.3 22B distilled image-to-video workflow generates a 25-frame clip conditioned on that image plus the text prompt.
+5. **Delivery** — every frame is downloaded and written to a per-generation directory with a metadata sidecar; frame 0 is shown in the viewport as a live preview. Generation progress (step count, %) surfaces via Houdini's native render stats panel.
 
 ### The render loop
 
@@ -32,17 +32,22 @@ sequenceDiagram
     participant Hydra
     participant Pass as HdCarWashRenderPass
     participant Raster as CPU Rasterizer
-    participant Comfy as ComfyUI (LTX-2)
+    participant Comfy as ComfyUI (LTX-2.3 22B)
     Hydra->>Pass: _Execute()
     Pass->>Raster: rasterize scene to AOVs
     Pass->>Pass: conditioning hash (depth·normal·id·color) + style-param hash
     alt conditioning or params changed, no job in flight
-        Pass->>Comfy: upload color.png, submit workflow
+        Pass->>Comfy: upload color.png · submit workflow (15s recv timeout)
         Note over Pass,Comfy: async — viewport keeps the CPU preview
+        Comfy-->>Pass: progress % via WebSocket (:8188/ws)
+        Pass->>Pass: surface step/% in viewport render stats
         Comfy-->>Pass: 25-frame result
-        Pass->>Pass: write sequence + sidecar, swap frame 0 into viewport
+        Pass->>Pass: write sequence + sidecar · swap frame 0 into viewport
     else unchanged
         Pass->>Pass: converged — no resubmit
+    else job failed / timed out
+        Pass->>Comfy: POST /interrupt (abandon server-side job)
+        Pass->>Pass: converged — surface error via TF_WARN
     end
 ```
 
@@ -68,7 +73,7 @@ Import the sequence as an image/texture sequence; the sidecar records the parame
 flowchart TB
     subgraph Plugin["plugin/hdCarWash — C++ Hydra delegate"]
         RD["renderDelegate<br/>render settings · backend · AOVs"]
-        RP["renderPass<br/>orchestration · convergence gate"]
+        RP["renderPass<br/>orchestration · convergence gate · progress"]
         RZ["rasterizer<br/>depth/normal/color/id AOVs"]
         CC["comfyClient<br/>workflow build · WS/HTTP · sequence I/O"]
         SUP["renderBuffer · mesh · camera · light · tokens"]
@@ -77,28 +82,29 @@ flowchart TB
     RP --> RZ
     RP --> CC
     RP --> SUP
-    CC -->|"HTTP + WebSocket"| Comfy[("ComfyUI server")]
+    CC -->|"HTTP POST /prompt<br/>WebSocket :8188/ws"| Comfy[("ComfyUI server")]
 ```
 
 | Component | Purpose |
 |-----------|---------|
 | **RenderDelegate** | Implements `HdRenderDelegate`; owns render settings (live edits via `SetRenderSetting`), backend selection, AOV descriptors |
-| **RenderPass** | Per-frame orchestration: rasterize → hash conditioning → gate AI submission → apply/converge |
+| **RenderPass** | Per-frame orchestration: rasterize → hash conditioning → gate AI submission → apply/converge; surfaces progress and errors |
 | **Rasterizer** | Deterministic CPU rasterizer producing color/depth/normal/id AOVs |
-| **ComfyClient** | Builds the LTX-2 workflow JSON, submits over HTTP/WebSocket, downloads the full result sequence |
+| **ComfyClient** | Builds the LTX-2.3 22B workflow JSON, submits over HTTP/WebSocket, downloads the full result sequence, reports progress and errors |
 
 ---
 
 ## Requirements
 
 - **Houdini 21.0.729** (the pinned build target; 21.0+ with USD/Hydra should work)
-- **ComfyUI** with LTX-2 nodes installed, reachable on `localhost:8188`
-- **Models:**
-  - `ltx-2-19b-distilled-fp8_transformer_only.safetensors` (UNET)
-  - `gemma_3_12B_it_fp4_mixed.safetensors` (text encoder)
-  - `taeltx_2.safetensors` (VAE)
+- **ComfyUI** with LTX-2.3 nodes installed, reachable on `localhost:8188`
+- **Models** (see [Model Configuration](#model-configuration)):
+  - `ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors` (UNET, `diffusion_models/`)
+  - `ltx-2.3-22b-distilled-fp8.safetensors` (checkpoint config, `checkpoints/`)
+  - `gemma_3_12B_it_fp4_mixed.safetensors` (text encoder, `text_encoders/`)
+  - `LTX23_video_vae_bf16.safetensors` (full 32x video VAE, `vae/`)
 - **Windows** 10/11 (64-bit)
-- **CUDA** GPU (RTX 3090+ recommended for the 19B model)
+- **GPU** with ≥ 24 GB VRAM (RTX 4090 tested; the 22B fp8 transformer occupies ~22 GB — Gemma runs on CPU)
 
 ---
 
@@ -119,7 +125,7 @@ python deploy_hdcarwash.py            # build (if needed) + copy DLL/plugInfo/pa
 python deploy_hdcarwash.py --skip-build   # deploy an already-built DLL
 ```
 
-The deploy script copies `hdCarWash.dll` to `~/houdini21.0/dso/usd/hdCarWash/lib/`, installs `plugInfo.json` + resources, and writes the Houdini package that sets `PXR_PLUGINPATH_NAME`. It refuses to run while Houdini is open (the DLL would be locked).
+The deploy script copies `hdCarWash.dll` to `~/houdini21.0/dso/usd/hdCarWash/lib/`, installs `plugInfo.json` + resources, and writes the Houdini package that sets `PXR_PLUGINPATH_NAME`. It refuses to run while Houdini is open (the DLL would be locked). A restart is required after each deploy.
 
 ### 3. Download models
 
@@ -127,7 +133,7 @@ The deploy script copies `hdCarWash.dll` to `~/houdini21.0/dso/usd/hdCarWash/lib
 ./download_models.ps1
 ```
 
-Or place the model files manually in ComfyUI's `models/` directories.
+Or place the model files manually in ComfyUI's `models/` directories (see [Model Configuration](#model-configuration)).
 
 ---
 
@@ -147,10 +153,12 @@ Or place the model files manually in ComfyUI's `models/` directories.
 |-----------|-------|---------|-------------|
 | Prompt | `carwash:prompt` | photorealistic 3D render… | What to generate |
 | Negative prompt | `carwash:negativePrompt` | blurry, low quality, distorted | What to avoid |
-| Inference steps | `carwash:inferenceSteps` | 20 | Denoising steps |
+| Inference steps | `carwash:inferenceSteps` | **8** | Denoising steps (LTX-2.3 distilled sweet spot) |
 | Guidance scale | `carwash:guidanceScale` | 7.5 | Prompt adherence |
-| Seed | `carwash:seed` | 42 | Base seed (time-jittered unless deterministic) |
+| Seed | `carwash:seed` | 42 | Base seed (time-jittered unless deterministic mode) |
+| Deterministic mode | `carwash:deterministicMode` | false | Fix seed — same scene + seed → identical result |
 | Conditioning strength | `carwash:controlNet:depthStrength` | 0.8 | LTXVImgToVideo strength on the color image |
+| Generation timeout | `carwash:comfyuiTimeoutSeconds` | 300 | Seconds before the job is abandoned and interrupted |
 | Backend | `carwash:backend` | ltx2 | AI backend (ltx2 / flux / cosmos) |
 
 ---
@@ -158,54 +166,68 @@ Or place the model files manually in ComfyUI's `models/` directories.
 ## Model Configuration
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ LTX-2 19B Configuration                                        │
-├────────────────────────────────────────────────────────────────┤
-│ UNET:          ltx-2-19b-distilled-fp8_transformer_only        │
-│ Text Encoder:  LTXAVTextEncoderLoader + Gemma 3 12B (3840-dim) │
-│ VAE:           taeltx_2                                        │
-│ Resolution:    Up to 1312×992 (multiples of 32)               │
-│ Frame Count:   25 frames                                      │
-│ Frame Rate:    25 FPS                                         │
-└────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│ LTX-2.3 22B Distilled Configuration                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│ UNET (transformer):                                                   │
+│   ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3         │
+│   → diffusion_models/   weight_dtype: fp8_e4m3fn   ~22 GB VRAM       │
+│                                                                       │
+│ Checkpoint (config + tokenizer):                                      │
+│   ltx-2.3-22b-distilled-fp8.safetensors                               │
+│   → checkpoints/                                                      │
+│                                                                       │
+│ Text encoder:                                                         │
+│   gemma_3_12B_it_fp4_mixed.safetensors                               │
+│   → text_encoders/   runs on CPU (offloaded to free VRAM)            │
+│                                                                       │
+│ VAE (full 32× spatial):                                               │
+│   LTX23_video_vae_bf16.safetensors                                    │
+│   → vae/   bf16   ~1.35 GB                                           │
+│                                                                       │
+│ Resolution:   multiples of 32, up to viewport size                   │
+│ Frame count:  25 frames                                               │
+│ Frame rate:   25 FPS                                                  │
+│ Steps:        8 (distilled; more steps rarely help)                   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** LTX-2 19B requires 3840-dimensional text embeddings. The older T5 XXL encoder (2048-dim) is incompatible — use `LTXAVTextEncoderLoader` with `gemma_3_12B_it_fp4_mixed.safetensors`.
+> **VAE note:** `taeltx2_3.safetensors` (tiny TAESD, ~22 MB) uses 16× spatial compression — incompatible with `LTXVImgToVideo`, which allocates the noise latent at `height // 32`. Use `LTX23_video_vae_bf16.safetensors` (full 32× VAE).
+
+> **Gemma note:** the 22B transformer fills ~22 GB of VRAM on a 24 GB card. Gemma 3 12B runs on CPU to stay within budget. Do **not** change `device: cpu` in the workflow.
 
 ---
 
 ## Status & Known Limitations
 
-hdCarWash is **pre-1.0**. The core artist loop works end-to-end — live settings, generate-once-and-converge, scene-conditioned generation, and full-sequence output — but the following are still in progress:
+hdCarWash is **pre-1.0** (v0.2). The core artist loop works end-to-end — live settings, generate-once-and-converge, scene-conditioned generation, full-sequence output, progress feedback, and clean error surfacing — but the following are still in progress:
 
 - **Render Settings tab not registered.** The `CarWashRenderSettingsAPI` USD schema isn't generated/registered yet, so the parameters don't appear as a UI tab. Drive settings via `RenderSettings` prim attributes for now.
-- **No in-viewport progress or error surfacing.** During a multi-minute generation the viewport just shows the CPU preview; failures (missing model, OOM, rejected workflow) currently go to `C:/Temp/hdcarwash_debug.txt` rather than the Houdini console.
-- **Fixed 60s completion timeout, no server-side cancel.** Long LTX-2 video renders can exceed it; abandoned jobs aren't yet interrupted on the server. The progress WebSocket endpoint also needs to be pointed at ComfyUI's `:8188/ws`.
-- **Sidecar records the base seed, not the jittered `noise_seed`.** So a non-deterministic render isn't bit-reproducible from the sidecar alone yet.
+- **Sidecar records the base seed, not the jittered `noise_seed`.** A non-deterministic render isn't bit-reproducible from the sidecar alone.
 
 ---
 
 ## Troubleshooting
 
-**"Shape mismatch: 128x2048 vs 3840x4096"** — you're using T5 XXL instead of Gemma 3 12B. Ensure `LTXAVTextEncoderLoader` is used with `gemma_3_12B_it_fp4_mixed.safetensors`.
+**Plugin not appearing in Houdini** — verify `~/houdini21.0/packages/hdCarWash.json` exists, that `PXR_PLUGINPATH_NAME` points at the folder containing `plugInfo.json` (the plugin root, not `resources/`), and that `~/houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` exists. Re-run `python deploy_hdcarwash.py`.
 
-**Plugin not appearing in Houdini** — verify `~/houdini21.0/packages/hdCarWash.json` exists, that `PXR_PLUGINPATH_NAME` points at the folder containing `plugInfo.json`, and that `~/houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` exists. Re-run `python deploy_hdcarwash.py`.
+**"ComfyUI rejected workflow — no prompt_id"** — ComfyUI returned an error instead of a `prompt_id`. The actual response body is now logged via `TF_WARN` in the Houdini console. Common causes: wrong model filenames, missing nodes, or ComfyUI still loading a prior job when the 15 s HTTP timeout fires.
+
+**Shape mismatch error at `LTXVImgToVideo`** — you are using the TAESD VAE (`taeltx2_3`). Switch to `LTX23_video_vae_bf16.safetensors` (the full 32× VAE). TAESD uses 16× spatial, which is incompatible with the node's latent allocation.
+
+**Out of VRAM at `CLIPTextEncode` / `SamplerCustomAdvanced`** — the workflow sets `device: cpu` for Gemma 3 12B. If you see OOM at the sampler, close GPU-heavy applications and try again; the 22B transformer leaves only ~2 GB headroom on a 4090.
 
 **ComfyUI connection failed** — confirm ComfyUI is running on `localhost:8188` and that the firewall allows local WebSocket/HTTP connections.
-
-**Out of VRAM** — reduce resolution, use the fp8 quantized model, and close other GPU applications.
 
 ---
 
 ## Development
 
-Enable debug output:
+Enable debug output (logs conditioning hash, convergence state, submission, download/sequence details to `C:/Temp/hdcarwash_debug.txt`):
 
 ```bash
 set TF_DEBUG=HD_CARWASH
 ```
-
-Runtime diagnostics are written to `C:/Temp/hdcarwash_debug.txt` (the per-frame conditioning hash, convergence state, submission, and download/sequence logs all appear there).
 
 Run tests:
 
@@ -226,10 +248,10 @@ Proprietary. All rights reserved. © 2026 Joseph O. Ibrahim.
 ## Acknowledgments
 
 - **SideFX** — Houdini and the USD/Hydra framework
-- **Lightricks** — LTX-2 video generation model
+- **Lightricks** — LTX-2.3 video generation model
 - **Google** — Gemma 3 text encoder
 - **ComfyUI** — node-based diffusion interface
 
 ---
 
-*Built with Houdini 21.0.729 · ComfyUI · LTX-2 19B · Gemma 3 12B*
+*Built with Houdini 21.0.729 · ComfyUI · LTX-2.3 22B distilled · Gemma 3 12B*

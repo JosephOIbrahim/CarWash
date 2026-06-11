@@ -1,116 +1,154 @@
-# CarWash ComfyUI Model Downloader
+# CarWash Model Installer — LTX-2.3 22B Distilled
 # Run as: powershell -ExecutionPolicy Bypass -File download_models.ps1
+#
+# Models required for the LTX-2.3 22B distilled workflow:
+#
+#   UNET (transformer-only, fp8):
+#     ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors
+#     → ComfyUI/models/diffusion_models/
+#
+#   Checkpoint (config + tokenizer for LTXAVTextEncoderLoader):
+#     ltx-2.3-22b-distilled-fp8.safetensors
+#     → ComfyUI/models/checkpoints/
+#
+#   Text encoder (Gemma 3 12B fp4 — runs on CPU):
+#     gemma_3_12B_it_fp4_mixed.safetensors
+#     → ComfyUI/models/text_encoders/
+#
+#   VAE (full 32x spatial, bf16):
+#     LTX23_video_vae_bf16.safetensors
+#     → ComfyUI/models/vae/
+#
+# Source: https://huggingface.co/Lightricks/LTX-Video
+#         https://huggingface.co/Lightricks/LTX-Video-0.9.7-distilled
 
 $ErrorActionPreference = "Continue"
-$ComfyDir = "C:\ComfyUI"
 
+# ── Configuration ────────────────────────────────────────────────────────────
+# Adjust $ComfyDir to match your ComfyUI installation.
+$ComfyDir = "G:\COMFY\ComfyUI"
+$ModelBase = "G:\COMFYUI_Database\Models"   # extra_model_paths.yaml base_path
+
+Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "   CarWash Model Downloader" -ForegroundColor Cyan
-Write-Host "   Downloading required AI models..." -ForegroundColor Cyan
+Write-Host "   CarWash Model Installer — LTX-2.3 22B Distilled" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "ComfyUI dir : $ComfyDir" -ForegroundColor Gray
+Write-Host "Model base  : $ModelBase" -ForegroundColor Gray
+Write-Host ""
 
-# Create directories
+# ── Directory setup ───────────────────────────────────────────────────────────
 $dirs = @(
-    "$ComfyDir\models\animatediff_models",
-    "$ComfyDir\models\controlnet",
-    "$ComfyDir\models\ipadapter",
-    "$ComfyDir\models\clip_vision",
-    "$ComfyDir\models\checkpoints"
+    "$ModelBase\diffusion_models",
+    "$ModelBase\checkpoints",
+    "$ModelBase\text_encoders",
+    "$ModelBase\vae"
 )
 
 foreach ($dir in $dirs) {
     if (!(Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Write-Host "Created: $dir" -ForegroundColor Green
+        Write-Host "[CREATED] $dir" -ForegroundColor Green
     }
 }
 
-# Download function with progress
-function Download-Model {
+# ── Download helper ───────────────────────────────────────────────────────────
+function Download-HF {
     param (
-        [string]$Url,
-        [string]$Output,
-        [string]$Name
+        [string]$Repo,     # e.g. "Lightricks/LTX-Video-0.9.7-distilled"
+        [string]$File,     # path within the repo, e.g. "ltx-2.3-22b-distilled-fp8.safetensors"
+        [string]$Output,   # absolute destination path
+        [string]$Label
     )
 
     if (Test-Path $Output) {
-        Write-Host "[SKIP] $Name already exists" -ForegroundColor Yellow
+        $mb = [math]::Round((Get-Item $Output).Length / 1MB)
+        Write-Host "[SKIP] $Label already present ($mb MB)" -ForegroundColor Yellow
         return
     }
 
-    Write-Host "[DOWNLOADING] $Name..." -ForegroundColor Cyan
-    Write-Host "  URL: $Url" -ForegroundColor Gray
-    Write-Host "  Destination: $Output" -ForegroundColor Gray
+    # Prefer huggingface-cli if available (handles auth + resumable downloads)
+    $hfcli = (Get-Command "huggingface-cli" -ErrorAction SilentlyContinue)
+    if ($hfcli) {
+        Write-Host "[DL] $Label (huggingface-cli)..." -ForegroundColor Cyan
+        huggingface-cli download $Repo $File --local-dir (Split-Path $Output)
+        return
+    }
 
+    # Fall back to direct URL
+    $Url = "https://huggingface.co/$Repo/resolve/main/$File"
+    Write-Host "[DL] $Label..." -ForegroundColor Cyan
+    Write-Host "     $Url" -ForegroundColor Gray
     try {
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $Url -OutFile $Output -UseBasicParsing
-        $size = (Get-Item $Output).Length / 1MB
-        Write-Host "[OK] Downloaded $Name ({0:N0} MB)" -f $size -ForegroundColor Green
-    }
-    catch {
-        Write-Host "[ERROR] Failed to download $Name : $_" -ForegroundColor Red
+        $mb = [math]::Round((Get-Item $Output).Length / 1MB)
+        Write-Host "[OK] $Label — $mb MB" -ForegroundColor Green
+    } catch {
+        Write-Host "[ERR] $Label : $_" -ForegroundColor Red
+        Write-Host "      Download manually from: https://huggingface.co/$Repo" -ForegroundColor Yellow
     }
 }
 
-Write-Host ""
-Write-Host "[1/6] AnimateDiff Motion Model (mm_sd_v15_v2.ckpt)..." -ForegroundColor White
-Download-Model `
-    -Url "https://huggingface.co/guoyww/animatediff/resolve/main/mm_sd_v15_v2.ckpt" `
-    -Output "$ComfyDir\models\animatediff_models\mm_sd_v15_v2.ckpt" `
-    -Name "AnimateDiff v2"
+# ── Models ────────────────────────────────────────────────────────────────────
+
+Write-Host "[1/4] UNET — LTX-2.3 22B transformer-only fp8 (~22 GB)" -ForegroundColor White
+Download-HF `
+    -Repo  "Lightricks/LTX-Video-0.9.7-distilled" `
+    -File  "ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors" `
+    -Output "$ModelBase\diffusion_models\ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors" `
+    -Label "LTX-2.3 22B UNET (fp8)"
 
 Write-Host ""
-Write-Host "[2/6] ControlNet Depth..." -ForegroundColor White
-Download-Model `
-    -Url "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11f1p_sd15_depth.pth" `
-    -Output "$ComfyDir\models\controlnet\control_v11f1p_sd15_depth.pth" `
-    -Name "ControlNet Depth"
+Write-Host "[2/4] Checkpoint — LTX-2.3 22B distilled fp8 (config + tokenizer, ~22 GB)" -ForegroundColor White
+Download-HF `
+    -Repo  "Lightricks/LTX-Video-0.9.7-distilled" `
+    -File  "ltx-2.3-22b-distilled-fp8.safetensors" `
+    -Output "$ModelBase\checkpoints\ltx-2.3-22b-distilled-fp8.safetensors" `
+    -Label "LTX-2.3 22B checkpoint"
 
 Write-Host ""
-Write-Host "[3/6] ControlNet Normal..." -ForegroundColor White
-Download-Model `
-    -Url "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_normalbae.pth" `
-    -Output "$ComfyDir\models\controlnet\control_v11p_sd15_normalbae.pth" `
-    -Name "ControlNet Normal"
+Write-Host "[3/4] Text encoder — Gemma 3 12B fp4 mixed (~12 GB, runs on CPU)" -ForegroundColor White
+# Note: gemma_3_12B_it_fp4_mixed.safetensors is a community fp4 quantization of
+# google/gemma-3-12b-it. Check the LTX-Video HF page for the current recommended source.
+Download-HF `
+    -Repo  "Lightricks/LTX-Video-0.9.7-distilled" `
+    -File  "gemma_3_12B_it_fp4_mixed.safetensors" `
+    -Output "$ModelBase\text_encoders\gemma_3_12B_it_fp4_mixed.safetensors" `
+    -Label "Gemma 3 12B fp4 (text encoder)"
 
 Write-Host ""
-Write-Host "[4/6] IP-Adapter Plus..." -ForegroundColor White
-Download-Model `
-    -Url "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors" `
-    -Output "$ComfyDir\models\ipadapter\ip-adapter-plus_sd15.safetensors" `
-    -Name "IP-Adapter Plus"
+Write-Host "[4/4] VAE — LTX-2.3 full video VAE bf16 (~1.4 GB)" -ForegroundColor White
+Download-HF `
+    -Repo  "Lightricks/LTX-Video-0.9.7-distilled" `
+    -File  "LTX23_video_vae_bf16.safetensors" `
+    -Output "$ModelBase\vae\LTX23_video_vae_bf16.safetensors" `
+    -Label "LTX-2.3 video VAE (bf16, 32x spatial)"
 
-Write-Host ""
-Write-Host "[5/6] CLIP Vision Encoder..." -ForegroundColor White
-Download-Model `
-    -Url "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors" `
-    -Output "$ComfyDir\models\clip_vision\CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors" `
-    -Name "CLIP Vision"
-
-Write-Host ""
-Write-Host "[6/6] Stable Diffusion 1.5 Base..." -ForegroundColor White
-# Using a reliable mirror for SD 1.5
-Download-Model `
-    -Url "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors" `
-    -Output "$ComfyDir\models\checkpoints\v1-5-pruned-emaonly.safetensors" `
-    -Name "SD 1.5"
-
+# ── Summary ───────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "   Download Complete!" -ForegroundColor Green
+Write-Host "   Installation complete" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Models installed in: $ComfyDir\models\" -ForegroundColor White
+Write-Host "Model locations:" -ForegroundColor White
+Write-Host "  $ModelBase\diffusion_models\ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors" -ForegroundColor Gray
+Write-Host "  $ModelBase\checkpoints\ltx-2.3-22b-distilled-fp8.safetensors" -ForegroundColor Gray
+Write-Host "  $ModelBase\text_encoders\gemma_3_12B_it_fp4_mixed.safetensors" -ForegroundColor Gray
+Write-Host "  $ModelBase\vae\LTX23_video_vae_bf16.safetensors" -ForegroundColor Gray
 Write-Host ""
-Write-Host "To start ComfyUI with CarWash support:" -ForegroundColor Yellow
+Write-Host "Ensure ComfyUI's extra_model_paths.yaml has:" -ForegroundColor Yellow
+Write-Host "  ltx_video:" -ForegroundColor White
+Write-Host "    base_path: $ModelBase\" -ForegroundColor White
+Write-Host "    diffusion_models: diffusion_models/" -ForegroundColor White
+Write-Host "    checkpoints: checkpoints/" -ForegroundColor White
+Write-Host "    text_encoders: text_encoders/" -ForegroundColor White
+Write-Host "    vae: vae/" -ForegroundColor White
+Write-Host ""
+Write-Host "Then start ComfyUI:" -ForegroundColor Yellow
 Write-Host "  cd $ComfyDir" -ForegroundColor White
 Write-Host "  python main.py --listen" -ForegroundColor White
-Write-Host ""
-Write-Host "Then in Houdini, set CarWash Backend:" -ForegroundColor Yellow
-Write-Host "  Host: localhost" -ForegroundColor White
-Write-Host "  Port: 8188" -ForegroundColor White
 Write-Host ""
 
 Read-Host "Press Enter to exit"
