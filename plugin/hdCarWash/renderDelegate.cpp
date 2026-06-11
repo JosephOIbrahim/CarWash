@@ -207,11 +207,11 @@ HdCarWashRenderDelegate::GetRenderSettingDescriptors() const
         VtValue(HdCarWashSettingsTokens->backendLTX2)
     });
 
-    // Determinism mode
+    // Determinism mode — bool: false = jitter seed each frame, true = fixed seed (#3b)
     settings.push_back({
-        "Determinism Mode",
+        "Deterministic Mode",
         HdCarWashSettingsTokens->deterministicMode,
-        VtValue(HdCarWashSettingsTokens->deterministicBalanced)
+        VtValue(false)
     });
 
     // ComfyUI server
@@ -221,11 +221,11 @@ HdCarWashRenderDelegate::GetRenderSettingDescriptors() const
         VtValue(std::string("http://localhost:8188"))
     });
 
-    // Inference settings
+    // Inference settings (8 = sweet spot for LTX-2.3 distilled)
     settings.push_back({
         "Inference Steps",
         HdCarWashSettingsTokens->inferenceSteps,
-        VtValue(20)
+        VtValue(8)
     });
 
     settings.push_back({
@@ -290,6 +290,26 @@ HdCarWashRenderDelegate::GetRenderSettingDescriptors() const
         "Enable Normal ControlNet",
         HdCarWashSettingsTokens->enableNormalControl,
         VtValue(true)
+    });
+
+    // AI enable / mode
+    settings.push_back({
+        "Enable AI Stylization",
+        HdCarWashSettingsTokens->enableAI,
+        VtValue(true)
+    });
+
+    settings.push_back({
+        "Progressive Preview",
+        HdCarWashSettingsTokens->progressiveRefine,
+        VtValue(true)
+    });
+
+    // ComfyUI runtime
+    settings.push_back({
+        "Generation Timeout (s)",
+        HdCarWashSettingsTokens->comfyuiTimeoutSeconds,
+        VtValue(300.0f)
     });
 
     return settings;

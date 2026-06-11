@@ -32,7 +32,7 @@ struct HDCARWASH_API HdCarWashStyleParams
 {
     std::string prompt = "anime style, vibrant colors, detailed";
     std::string negativePrompt = "blurry, low quality, distorted";
-    int inferenceSteps = 20;
+    int inferenceSteps = 8;   // LTX-2.3 distilled sweet spot
     float guidanceScale = 7.5f;
     float controlNetStrength = 0.8f;       // Depth ControlNet strength
     float normalControlNetStrength = 0.6f; // Normal ControlNet strength

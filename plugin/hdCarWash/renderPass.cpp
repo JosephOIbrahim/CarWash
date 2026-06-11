@@ -79,7 +79,7 @@ HdCarWashRenderPass::HdCarWashRenderPass(
     // Set default style parameters
     _styleParams.prompt = "photorealistic 3D render, cinematic lighting, sharp details";
     _styleParams.negativePrompt = "blurry, low quality, distorted";
-    _styleParams.inferenceSteps = 20;
+    _styleParams.inferenceSteps = 8;  // LTX-2.3 distilled sweet spot
     _styleParams.guidanceScale = 7.5f;
     _styleParams.seed = 42;  // Deterministic seed for reproducibility
     _styleParams.useDepthControl = true;
