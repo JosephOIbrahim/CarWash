@@ -2,11 +2,13 @@
 
 Verifies that the CarWash Hydra delegate **loads, registers, and runs** in a given
 Houdini build without opening the GUI. Build + launch must be the **same** Houdini
-version (standardized on **21.0.729**).
+version — set `$HFS` to whichever install you built against (21.0.729 today, 22.x
+when it ships).
 
 ## 1. Confirm the delegate registers
 
 ```powershell
+# Point HFS at the install you built against:
 $env:HFS = "C:\Program Files\Side Effects Software\Houdini 21.0.729"
 $env:PXR_PLUGINPATH_NAME = "C:\Users\User\CARWASH\plugin"   # manifest dir (plugInfo.json + lib/hdCarWash.dll)
 & "$env:HFS\bin\husk.exe" --list-renderers

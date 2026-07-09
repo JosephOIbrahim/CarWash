@@ -3,6 +3,8 @@
 
 import asyncio
 import json
+import os
+from pathlib import Path
 
 try:
     import websockets
@@ -10,6 +12,31 @@ except ImportError:
     import subprocess
     subprocess.run(["pip", "install", "websockets"], check=True)
     import websockets
+
+
+# Repo root is the parent of this script's directory (automation/).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DLL_SOURCE = REPO_ROOT / "build" / "plugin" / "hdCarWash" / "Release" / "hdCarWash.dll"
+
+
+def _houdini_dll_target():
+    """Resolve the deploy DLL path under the active Houdini user-pref dir."""
+    base = Path(r"C:\Program Files\Side Effects Software")
+    home = Path.home()
+    if base.exists():
+        installs = sorted(
+            (p for p in base.iterdir()
+             if p.is_dir() and p.name.startswith("Houdini ")
+             and len(p.name[8:].split(".")) == 3
+             and all(s.isdigit() for s in p.name[8:].split("."))),
+            key=lambda p: p.name, reverse=True,
+        )
+        if installs:
+            ver = installs[0].name.replace("Houdini ", "")
+            parts = ver.split(".")
+            user_dir = home / f"houdini{parts[0]}.{parts[1] if len(parts) > 1 else '0'}"
+            return str(user_dir / "dso" / "usd" / "hdCarWash" / "lib" / "hdCarWash.dll")
+    return str(home / "houdini21.0" / "dso" / "usd" / "hdCarWash" / "lib" / "hdCarWash.dll")
 
 
 async def reload_plugin():
@@ -63,10 +90,9 @@ if sopimport:
 async def install_and_notify():
     """Copy DLL after Houdini is closed."""
     import shutil
-    import os
 
-    src = r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\build\plugin\hdCarWash\Release\hdCarWash.dll"
-    dst = r"C:\Users\User\houdini21.0\dso\usd\hdCarWash\lib\hdCarWash.dll"
+    src = str(DLL_SOURCE)
+    dst = _houdini_dll_target()
 
     if not os.path.exists(src):
         print(f"ERROR: Source DLL not found: {src}")
@@ -93,8 +119,8 @@ if __name__ == "__main__":
         if not isinstance(success, bool):
             # Direct call for older Python
             import shutil
-            src = r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\build\plugin\hdCarWash\Release\hdCarWash.dll"
-            dst = r"C:\Users\User\houdini21.0\dso\usd\hdCarWash\lib\hdCarWash.dll"
+            src = str(DLL_SOURCE)
+            dst = _houdini_dll_target()
             try:
                 shutil.copy2(src, dst)
                 print(f"SUCCESS: Plugin updated!")

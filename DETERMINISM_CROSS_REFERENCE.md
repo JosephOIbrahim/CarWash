@@ -453,7 +453,7 @@ private:
    - 676 files, 4-layer determinism stack
    - Dual-run verified
 
-3. **HdCarWash** (C:\Users\User\Downloads\HDCARWAASH\HdCarWash)
+3. **HdCarWash** (C:\Users\User\CARWASH)
    - Phase 1: CPU rasterizer (implicitly deterministic)
    - Phase 2: ComfyUI integration (needs seed locking)
 

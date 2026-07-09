@@ -96,7 +96,7 @@ flowchart TB
 
 ## Requirements
 
-- **Houdini 21.0.729** (the pinned build target; 21.0+ with USD/Hydra should work)
+- **Houdini 21.0+** with USD/Hydra (pinned build target: 21.0.729). The deploy script auto-detects the newest installed Houdini and is version-agnostic — it will target 22.x the same way once it ships (pass `--houdini-version` to pin a specific install).
 - **ComfyUI** with LTX-2.3 nodes installed, reachable on `localhost:8188`
 - **Models** (see [Model Configuration](#model-configuration)):
   - `ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors` (UNET, `diffusion_models/`)
@@ -118,14 +118,26 @@ cmake -B build -G "Visual Studio 17 2022" -A x64 ^
 cmake --build build --target hdCarWash --config Release
 ```
 
+Point `CMAKE_PREFIX_PATH` at whichever install you build against (the
+`<Houdini install>/toolkit/cmake` dir). The same tree builds against 22.x
+when it ships.
+
 ### 2. Deploy to Houdini
 
 ```bash
-python deploy_hdcarwash.py            # build (if needed) + copy DLL/plugInfo/package
-python deploy_hdcarwash.py --skip-build   # deploy an already-built DLL
+python deploy_hdcarwash.py                    # auto-detect newest install: build + deploy
+python deploy_hdcarwash.py --houdini-version 21.0.729   # pin a specific install
+python deploy_hdcarwash.py --skip-build       # deploy an already-built DLL
 ```
 
-The deploy script copies `hdCarWash.dll` to `~/houdini21.0/dso/usd/hdCarWash/lib/`, installs `plugInfo.json` + resources, and writes the Houdini package that sets `PXR_PLUGINPATH_NAME`. It refuses to run while Houdini is open (the DLL would be locked). A restart is required after each deploy.
+The deploy script resolves the Houdini install and user-pref dir from the
+version (no hardcoded `houdini21.0` path). It copies `hdCarWash.dll` to
+`~/houdini<major>.<minor>/dso/usd/hdCarWash/lib/`, installs the delegate
+`plugInfo.json`, deploys the **`usdCarWash` schema resource plugin** (so the
+CarWash tab registers in the Render Settings LOP), and writes the Houdini
+package that sets `PXR_PLUGINPATH_NAME` for both plugin roots. It refuses to
+run while Houdini is open (the DLL would be locked). A restart is required
+after each deploy.
 
 ### 3. Download models
 
@@ -140,12 +152,12 @@ Or place the model files manually in ComfyUI's `models/` directories (see [Model
 ## Usage
 
 1. **Start ComfyUI** on port 8188.
-2. **Launch Houdini 21** and build a Solaris (LOP) scene with geometry, a camera, and lights.
+2. **Launch Houdini** and build a Solaris (LOP) scene with geometry, a camera, and lights.
 3. **Add a Render Settings LOP** and select **CarWash** as the renderer.
 4. **Set the prompt and parameters** (see the table below). Generation runs asynchronously; the viewport shows the CPU rasterization until the AI frame lands.
 5. Output frames are written under `C:/CarWashRenders/<promptId>/`.
 
-> **Driving settings today:** the Render Settings *tab* does not yet appear in the UI (the USD schema is not registered — see [Status](#status--known-limitations)). Until it does, set parameters via the `RenderSettings` prim's `carwash:*` attributes. The delegate reads live edits correctly once they reach it.
+> **Driving settings today:** the CarWash Render Settings *tab* is shipped by the deploy script but its appearance is pending verification against the target Houdini (see [Status](#status--known-limitations)). If the tab is not yet visible, set parameters via the `RenderSettings` prim's `carwash:*` attributes. The delegate reads live edits correctly once they reach it.
 
 ### Render Settings
 
@@ -202,14 +214,14 @@ Or place the model files manually in ComfyUI's `models/` directories (see [Model
 
 hdCarWash is **pre-1.0** (v0.2). The core artist loop works end-to-end — live settings, generate-once-and-converge, scene-conditioned generation, full-sequence output, progress feedback, and clean error surfacing — but the following are still in progress:
 
-- **Render Settings tab not registered.** The `CarWashRenderSettingsAPI` USD schema isn't generated/registered yet, so the parameters don't appear as a UI tab. Drive settings via `RenderSettings` prim attributes for now.
+- **Render Settings tab — schema plugin now deployed, registration pending H22 verification.** The `CarWashRenderSettingsAPI` USD schema is now built and shipped by `deploy_hdcarwash.py` (the `usdCarWash` resource plugin + `SchemasForRenderers` map). Final confirmation that the tab appears in the Render Settings LOP must be done against the target Houdini (the schema sources are regenerated via `usdGenSchema` for that build). Until verified, drive settings via the `RenderSettings` prim's `carwash:*` attributes.
 - **Sidecar records the base seed, not the jittered `noise_seed`.** A non-deterministic render isn't bit-reproducible from the sidecar alone.
 
 ---
 
 ## Troubleshooting
 
-**Plugin not appearing in Houdini** — verify `~/houdini21.0/packages/hdCarWash.json` exists, that `PXR_PLUGINPATH_NAME` points at the folder containing `plugInfo.json` (the plugin root, not `resources/`), and that `~/houdini21.0/dso/usd/hdCarWash/lib/hdCarWash.dll` exists. Re-run `python deploy_hdcarwash.py`.
+**Plugin not appearing in Houdini** — verify `~/houdini<major>.<minor>/packages/hdCarWash.json` exists, that `PXR_PLUGINPATH_NAME` points at the folder containing `plugInfo.json` (the plugin root, not `resources/`), and that `~/houdini<major>.<minor>/dso/usd/hdCarWash/lib/hdCarWash.dll` exists. Re-run `python deploy_hdcarwash.py`.
 
 **"ComfyUI rejected workflow — no prompt_id"** — ComfyUI returned an error instead of a `prompt_id`. The actual response body is now logged via `TF_WARN` in the Houdini console. Common causes: wrong model filenames, missing nodes, or ComfyUI still loading a prior job when the 15 s HTTP timeout fires.
 
@@ -254,4 +266,4 @@ Proprietary. All rights reserved. © 2026 Joseph O. Ibrahim.
 
 ---
 
-*Built with Houdini 21.0.729 · ComfyUI · LTX-2.3 22B distilled · Gemma 3 12B*
+*Built against Houdini 21.0.729 · version-agnostic build/deploy (21.0 → 22.x) · ComfyUI · LTX-2.3 22B distilled · Gemma 3 12B*

@@ -1,11 +1,11 @@
-"""
+r"""
 Synapse WebSocket Server for Houdini
 ====================================
 Run INSIDE Houdini Python Shell to enable ws://localhost:9999
 
 Usage:
     import runpy
-    runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\houdini\synapse_server.py")
+    runpy.run_path(r"C:\Users\User\CARWASH\houdini\synapse_server.py")
 """
 
 import hou

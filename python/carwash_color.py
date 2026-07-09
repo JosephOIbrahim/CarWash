@@ -67,11 +67,23 @@ class ColorManager:
         config_path = self.config.ocio_config_path
 
         if not config_path:
-            # Try common OCIO config locations
+            # Try common OCIO config locations. Resolve Houdini's bundled
+            # config from $HFS (or hou.getenv) rather than a hardcoded
+            # install path, so this works across Houdini 21/22+.
+            hfs = os.environ.get("HFS")
+            if not hfs:
+                try:
+                    import hou  # available when run inside Houdini
+                    hfs = hou.getenv("HFS")
+                except Exception:
+                    hfs = None
+            houdini_ocio = (
+                f"{hfs}/houdini/ocio/configs/aces_1.0.3/config.ocio" if hfs else None
+            )
             potential_paths = [
                 os.environ.get("OCIO"),
+                houdini_ocio,
                 "C:/ACES/aces_1.2/config.ocio",
-                "C:/Program Files/SideFX/Houdini 21.0/houdini/ocio/configs/aces_1.0.3/config.ocio",
             ]
             for path in potential_paths:
                 if path and Path(path).exists():

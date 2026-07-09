@@ -14,6 +14,12 @@ import sys
 # Schema directory path
 SCHEMA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'schema')
 PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'plugin')
+# The CarWashRenderSettingsAPI schema lives in the usdCarWash *resource* plugin,
+# separate from the hdCarWash delegate plugin. This is the plugInfo that carries
+# the SchemasForRenderers map making the CarWash tab appear in the Render Settings LOP.
+SCHEMA_PLUGINFO = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'usdCarWash', 'resources', 'plugInfo.json')
 
 
 class TestPlugInfoJson:
@@ -21,9 +27,15 @@ class TestPlugInfoJson:
 
     @pytest.fixture
     def plug_info(self):
-        """Load plugInfo.json."""
+        """Load the hdCarWash delegate plugInfo.json."""
         path = os.path.join(PLUGIN_DIR, 'plugInfo.json')
         with open(path, 'r') as f:
+            return json.load(f)
+
+    @pytest.fixture
+    def schema_plug_info(self):
+        """Load the usdCarWash schema resource plugInfo.json."""
+        with open(SCHEMA_PLUGINFO, 'r') as f:
             return json.load(f)
 
     def test_pluginfo_exists(self):
@@ -48,38 +60,41 @@ class TestPlugInfoJson:
         assert 'HdCarWashRendererPlugin' in types
         assert 'HdRendererPlugin' in types['HdCarWashRendererPlugin']['bases']
 
-    def test_has_render_settings_api(self, plug_info):
-        """Verify CarWashRenderSettingsAPI is registered."""
-        types = plug_info['Plugins'][0]['Info']['Types']
-        assert 'usdCarWashCarWashRenderSettingsAPI' in types
+    def test_has_render_settings_api(self, schema_plug_info):
+        """Verify CarWashRenderSettingsAPI is registered in the schema plugin."""
+        types = schema_plug_info['Plugins'][0]['Info']['Types']
+        assert 'CarWashRenderSettingsAPI' in types
 
-    def test_render_settings_api_schema_kind(self, plug_info):
+    def test_render_settings_api_schema_kind(self, schema_plug_info):
         """Verify RenderSettingsAPI has correct schemaKind."""
-        api_type = plug_info['Plugins'][0]['Info']['Types']['usdCarWashCarWashRenderSettingsAPI']
+        api_type = schema_plug_info['Plugins'][0]['Info']['Types']['CarWashRenderSettingsAPI']
         assert api_type['schemaKind'] == 'singleApplyAPI'
 
-    def test_render_settings_api_can_only_apply_to(self, plug_info):
+    def test_render_settings_api_can_only_apply_to(self, schema_plug_info):
         """Verify RenderSettingsAPI can only apply to RenderSettings."""
-        api_type = plug_info['Plugins'][0]['Info']['Types']['usdCarWashCarWashRenderSettingsAPI']
+        api_type = schema_plug_info['Plugins'][0]['Info']['Types']['CarWashRenderSettingsAPI']
         assert 'apiSchemaCanOnlyApplyTo' in api_type
         assert 'RenderSettings' in api_type['apiSchemaCanOnlyApplyTo']
 
-    def test_render_settings_api_bases(self, plug_info):
+    def test_render_settings_api_bases(self, schema_plug_info):
         """Verify RenderSettingsAPI inherits from UsdAPISchemaBase."""
-        api_type = plug_info['Plugins'][0]['Info']['Types']['usdCarWashCarWashRenderSettingsAPI']
+        api_type = schema_plug_info['Plugins'][0]['Info']['Types']['CarWashRenderSettingsAPI']
         assert 'UsdAPISchemaBase' in api_type['bases']
 
-    def test_has_usd_render_section(self, plug_info):
-        """Verify UsdRender metadata exists."""
-        info = plug_info['Plugins'][0]['Info']
-        assert 'UsdRender' in info
-        assert info['UsdRender']['rendererDisplayName'] == 'CarWash Renderer'
+    def test_has_schemas_for_renderers(self, schema_plug_info):
+        """Verify the SchemasForRenderers map links HdCarWash to the API schema.
 
-    def test_has_schemas_section(self, plug_info):
-        """Verify Schemas section exists."""
-        info = plug_info['Plugins'][0]['Info']
-        assert 'Schemas' in info
-        assert 'carWashRenderSettingsAPI' in info['Schemas']
+        This is the mechanism Houdini's Render Settings LOP reads to show the
+        CarWash tab when the HdCarWash renderer is selected.
+        """
+        info = schema_plug_info['Plugins'][0]['Info']
+        assert 'SchemasForRenderers' in info
+        assert 'CarWashRenderSettingsAPI' in info['SchemasForRenderers']['HdCarWash']
+
+    def test_has_schema_alias(self, schema_plug_info):
+        """Verify the UsdSchemaBase alias is declared for the API type."""
+        api_type = schema_plug_info['Plugins'][0]['Info']['Types']['CarWashRenderSettingsAPI']
+        assert api_type['alias']['UsdSchemaBase'] == 'CarWashRenderSettingsAPI'
 
 
 class TestSchemaFiles:

@@ -924,10 +924,13 @@ class TiledRenderer:
 
 def create_houdini_shelf_tool() -> str:
     """Generate shelf tool code for Houdini."""
-    return '''
+    # Embed this module's own directory so the shelf tool imports from the
+    # actual repo location, not a stale hardcoded path.
+    python_dir = str(Path(__file__).resolve().parent).replace("\\", "/")
+    return f'''
 import hou
 import sys
-sys.path.insert(0, "C:/Users/User/Downloads/HDCARWAASH/HdCarWash/python")
+sys.path.insert(0, "{python_dir}")
 from carwash_production import CarWashEngine, CarWashConfig
 
 def carwash_render():

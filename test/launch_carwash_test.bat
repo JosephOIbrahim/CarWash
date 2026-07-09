@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title HdCarWash Test Environment
 color 1F
 
@@ -12,7 +13,19 @@ echo     ║                                           ║
 echo     ╚═══════════════════════════════════════════╝
 echo.
 
-set HOUDINI_PATH=C:\Program Files\Side Effects Software\Houdini 21.0.729
+set "HOUDINI_BASE=C:\Program Files\Side Effects Software"
+if not defined HOUDINI_VERSION (
+    set "LATEST="
+    for /f "delims=" %%D in ('dir /b /ad /o:n "%HOUDINI_BASE%\Houdini *" 2^>NUL ^| findstr /c:"."') do set "LATEST=%%D"
+    if not defined LATEST (
+        echo     [ERROR] No Houdini install found under %HOUDINI_BASE%
+        pause
+        exit /b 1
+    )
+    set "HOUDINI_VERSION=!LATEST:Houdini =!"
+)
+set "HOUDINI_PATH=%HOUDINI_BASE%\Houdini %HOUDINI_VERSION%"
+for /f "tokens=1,2 delims=." %%a in ("%HOUDINI_VERSION%") do set "HOUDINI_MAJORMINOR=%%a.%%b"
 
 echo     Checking installation...
 echo.
@@ -25,9 +38,9 @@ if not exist "%HOUDINI_PATH%\bin\houdini.exe" (
     exit /b 1
 )
 
-echo     [OK] Houdini 21.0.729
+echo     [OK] Houdini %HOUDINI_VERSION%
 
-set CARWASH_DLL=%USERPROFILE%\houdini21.0\dso\usd\hdCarWash\lib\hdCarWash.dll
+set CARWASH_DLL=%USERPROFILE%\houdini%HOUDINI_MAJORMINOR%\dso\usd\hdCarWash\lib\hdCarWash.dll
 if exist "%CARWASH_DLL%" (
     echo     [OK] HdCarWash plugin installed
 ) else (

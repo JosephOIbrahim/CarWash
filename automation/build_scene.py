@@ -1,11 +1,11 @@
-"""
+r"""
 Build CarWash scene via Synapse
 ===============================
 Requires: Synapse server running in Houdini (port 9999)
 
 Step 1: In Houdini Python Shell run:
     import runpy
-    runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\houdini\synapse_server.py")
+    runpy.run_path(r"C:\Users\User\CARWASH\houdini\synapse_server.py")
 
 Step 2: Run this script externally:
     python build_scene.py
@@ -55,7 +55,7 @@ async def build_scene():
         print("  2. Windows > Python Shell")
         print("  3. Run:")
         print('     import runpy')
-        print('     runpy.run_path(r"C:\\Users\\User\\Downloads\\HDCARWAASH\\HdCarWash\\houdini\\synapse_server.py")')
+        print('     runpy.run_path(r"C:\\Users\\User\\CARWASH\\houdini\\synapse_server.py")')
 
 
 if __name__ == "__main__":

@@ -75,6 +75,12 @@ endif()
 
 add_subdirectory(plugin/hdCarWash)
 
+# USD schema library + resource plugin for CarWashRenderSettingsAPI.
+# Builds the generated C++ schema classes and installs the schema resource
+# plugin (plugInfo.json + generatedSchema.usda) that makes the CarWash tab
+# appear in Houdini's Render Settings LOP.
+add_subdirectory(usdCarWash)
+
 if(HDCARWASH_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/cpp)

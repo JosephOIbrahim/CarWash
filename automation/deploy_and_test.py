@@ -9,7 +9,7 @@ Connects to Houdini via ws://localhost:9999 and:
 Prerequisites:
     - Synapse server running in Houdini Python Shell:
       import runpy
-      runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\houdini\synapse_server.py")
+      runpy.run_path(r"C:\Users\User\CARWASH\houdini\synapse_server.py")
 """
 
 import asyncio
@@ -26,9 +26,31 @@ except ImportError:
     import websockets
 
 
-# Paths
-SOURCE_DIR = Path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash")
-HOUDINI_USD_DIR = Path(r"C:\Users\User\houdini21.0\dso\usd")
+# Paths — repo root is the parent of this script's directory (automation/).
+SOURCE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _houdini_usd_dir():
+    """Resolve <user-pref>/dso/usd for the active Houdini install."""
+    base = Path(r"C:\Program Files\Side Effects Software")
+    home = Path.home()
+    if base.exists():
+        installs = sorted(
+            (p for p in base.iterdir()
+             if p.is_dir() and p.name.startswith("Houdini ")
+             and len(p.name[8:].split(".")) == 3
+             and all(s.isdigit() for s in p.name[8:].split("."))),
+            key=lambda p: p.name, reverse=True,
+        )
+        if installs:
+            ver = installs[0].name.replace("Houdini ", "")
+            parts = ver.split(".")
+            user_dir = home / f"houdini{parts[0]}.{parts[1] if len(parts) > 1 else '0'}"
+            return user_dir / "dso" / "usd"
+    return home / "houdini21.0" / "dso" / "usd"
+
+
+HOUDINI_USD_DIR = _houdini_usd_dir()
 SYNAPSE_URI = "ws://localhost:9999"
 
 
@@ -390,7 +412,7 @@ async def main():
         print("  2. Windows > Python Shell")
         print("  3. Run:")
         print('     import runpy')
-        print('     runpy.run_path(r"C:\\Users\\User\\Downloads\\HDCARWAASH\\HdCarWash\\houdini\\synapse_server.py")')
+        print('     runpy.run_path(r"C:\\Users\\User\\CARWASH\\houdini\\synapse_server.py")')
     except Exception as e:
         print(f"\nERROR: {e}")
 

@@ -9,6 +9,8 @@ echo.
 
 :: Configuration
 set INSTALL_DIR=C:\ComfyUI
+:: PYTHON_VERSION is for ComfyUI's OWN standalone Python env (independent of
+:: Houdini's embedded interpreter). Bump only if your ComfyUI Python changes.
 set PYTHON_VERSION=3.11
 
 :: Check for Git

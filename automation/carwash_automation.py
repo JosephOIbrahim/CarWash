@@ -23,7 +23,38 @@ from datetime import datetime
 
 # Configuration
 DEBUG_LOG_PATH = r"C:\Temp\hdcarwash_debug.txt"
-CARWASH_DLL_PATH = os.path.expanduser(r"~\houdini21.0\dso\usd\hdCarWash\lib\hdCarWash.dll")
+
+
+def _houdini_user_dir():
+    """Resolve the active Houdini user-pref dir (houdini<major>.<minor>).
+
+    Derives from the newest install under "C:\\Program Files\\Side Effects
+    Software"; falls back to the newest ~/houdini* dir if no install is found.
+    """
+    base = Path(r"C:\Program Files\Side Effects Software")
+    if base.exists():
+        installs = sorted(
+            (p for p in base.iterdir()
+             if p.is_dir() and p.name.startswith("Houdini ")
+             and len(p.name[8:].split(".")) == 3
+             and all(s.isdigit() for s in p.name[8:].split("."))),
+            key=lambda p: p.name, reverse=True,
+        )
+        if installs:
+            ver = installs[0].name.replace("Houdini ", "")
+            parts = ver.split(".")
+            return Path.home() / f"houdini{parts[0]}.{parts[1] if len(parts) > 1 else '0'}"
+    # Fallback: newest matching ~/houdini* dir
+    home = Path.home()
+    cands = sorted(
+        (p for p in home.iterdir()
+         if p.is_dir() and p.name.startswith("houdini") and p.name[7:].replace(".", "").isdigit()),
+        key=lambda p: p.name, reverse=True,
+    )
+    return cands[0] if cands else home / "houdini21.0"
+
+
+CARWASH_DLL_PATH = str(_houdini_user_dir() / "dso" / "usd" / "hdCarWash" / "lib" / "hdCarWash.dll")
 
 
 class HdCarWashAutomation:

@@ -1,0 +1,21 @@
+# Python dependencies for CARWASH (hdCarWash) tooling.
+#
+# IMPORTANT — two interpreters:
+#   * Houdini's EMBEDDED Python interpreter runs the in-Houdini tooling
+#     (python/carwash_production.py, python/carwash_video_bridge.py,
+#     houdini/synapse_server.py, automation/*). Install these deps into
+#     THAT interpreter so `hou`/`pxr` resolve. Houdini 21 ships Python 3.11;
+#     Houdini 22 is expected to bump to 3.12/3.13 — reinstall the matching
+#     wheels when you upgrade. Use Houdini's own pip, e.g.:
+#         & "$env:HFS/bin/hython.exe" -m pip install -r requirements.txt
+#   * ComfyUI runs in its OWN separate Python env (see setup_comfyui.bat);
+#     its deps are unrelated to this file.
+#
+# numpy may already ship with Houdini — reinstall only if import fails.
+numpy>=1.24
+requests>=2.31
+websockets>=11.0
+
+# Optional: OpenColorIO bindings for the OCIO color path in carwash_color.py.
+# Falls back to built-in sRGB transforms when unavailable.
+PyOpenColorIO>=2.3; platform_system == "Windows"

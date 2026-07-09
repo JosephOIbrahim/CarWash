@@ -2,12 +2,18 @@
 """
 HdCarWash Automated Deployment System
 ======================================
-Builds and deploys the HdCarWash Hydra delegate to Houdini 21.
+Builds and deploys the HdCarWash Hydra delegate to Houdini.
+
+The Houdini install and user-pref directory are derived from the build
+target, not hardcoded — so the same script deploys to 21.0 today and 22.0
+when it ships. The user-pref dir follows Houdini's `houdini<major>.<minor>`
+convention (e.g. `houdini21.0`, `houdini22.0`).
 
 Usage:
-    python deploy_hdcarwash.py          # Full build and deploy
-    python deploy_hdcarwash.py --skip-build  # Deploy only (skip cmake build)
-    python deploy_hdcarwash.py --verbose     # Verbose output
+    python deploy_hdcarwash.py                                  # Full build and deploy (auto-detect)
+    python deploy_hdcarwash.py --houdini-version 21.0.729      # Pin a specific install
+    python deploy_hdcarwash.py --skip-build                    # Deploy only (skip cmake build)
+    python deploy_hdcarwash.py --verbose                       # Verbose output
 """
 
 import argparse
@@ -20,40 +26,104 @@ from pathlib import Path
 from typing import Optional
 
 
+HOUDINI_INSTALL_BASE = Path(r"C:\Program Files\Side Effects Software")
+
+
+def _is_version_install(dir_name: str) -> bool:
+    """True for version-named installs like 'Houdini 21.0.729', False for
+    non-version siblings like 'Houdini Server' or 'Houdini License Server'."""
+    if not dir_name.startswith("Houdini "):
+        return False
+    rest = dir_name[len("Houdini "):]
+    parts = rest.split(".")
+    return len(parts) == 3 and all(p.isdigit() for p in parts)
+
+
+def find_houdini_install(version: Optional[str] = None) -> Path:
+    """Locate the Houdini install directory.
+
+    If `version` is given (e.g. "21.0.729"), use that exact install. Otherwise
+    auto-detect the newest installed Houdini under the Side Effects directory.
+    """
+    if version:
+        path = HOUDINI_INSTALL_BASE / f"Houdini {version}"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Houdini {version} not found at {path}. "
+                f"Pass --houdini-version with an installed version."
+            )
+        return path
+
+    if not HOUDINI_INSTALL_BASE.exists():
+        raise FileNotFoundError(
+            f"No Houdini install found under {HOUDINI_INSTALL_BASE}. "
+            f"Pass --houdini-version explicitly."
+        )
+
+    installs = sorted(
+        (p for p in HOUDINI_INSTALL_BASE.iterdir()
+         if p.is_dir() and _is_version_install(p.name)),
+        key=lambda p: p.name,
+        reverse=True,  # newest first
+    )
+    if not installs:
+        raise FileNotFoundError(
+            f"No Houdini installs found under {HOUDINI_INSTALL_BASE}."
+        )
+    return installs[0]
+
+
+def houdini_user_dir(version: str) -> Path:
+    """Houdini user-pref dir follows the `houdini<major>.<minor>` convention."""
+    parts = version.split(".")
+    major, minor = parts[0], parts[1] if len(parts) > 1 else "0"
+    return Path.home() / f"houdini{major}.{minor}"
+
+
 class Config:
     """Centralized deployment configuration."""
 
-    # Source paths (relative to project root)
-    PROJECT_ROOT = Path(__file__).parent.resolve()
-    BUILD_DIR = PROJECT_ROOT / "build"
-    PLUGIN_DIR = PROJECT_ROOT / "plugin"
-    SCHEMA_DIR = PROJECT_ROOT / "schema"
+    def __init__(self, version: Optional[str] = None):
+        """Resolve install + user-pref paths from the Houdini version.
 
-    # Source files
-    DLL_SOURCE = BUILD_DIR / "plugin" / "hdCarWash" / "Release" / "hdCarWash.dll"
-    PLUGINFO_SOURCE = PLUGIN_DIR / "plugInfo.json"
+        `version` is the full version string (e.g. "21.0.729"). When None,
+        auto-detect the newest installed Houdini.
+        """
+        self.install_dir = find_houdini_install(version)
+        # Derive the version string from the install dir name ("Houdini 21.0.729").
+        self.version = self.install_dir.name.replace("Houdini ", "")
 
-    # Target paths (Houdini installation)
-    HOUDINI_USER_DIR = Path.home() / "houdini21.0"
-    INSTALL_ROOT = HOUDINI_USER_DIR / "dso" / "usd" / "hdCarWash"
-    INSTALL_LIB = INSTALL_ROOT / "lib"
-    INSTALL_RESOURCES = INSTALL_ROOT / "resources"
-    INSTALL_SCHEMA = INSTALL_RESOURCES / "schema"
-    PACKAGES_DIR = HOUDINI_USER_DIR / "packages"
+        # Source paths (relative to project root)
+        self.PROJECT_ROOT = Path(__file__).parent.resolve()
+        self.BUILD_DIR = self.PROJECT_ROOT / "build"
+        self.PLUGIN_DIR = self.PROJECT_ROOT / "plugin"
+        self.SCHEMA_DIR = self.PROJECT_ROOT / "schema"
 
-    # Target files
-    DLL_TARGET = INSTALL_LIB / "hdCarWash.dll"
-    # plugInfo.json must sit at the plugin ROOT (not resources/): its
-    # LibraryPath "lib/hdCarWash.dll" is resolved relative to the plugInfo's own
-    # directory. With it in resources/, USD looked for the DLL at
-    # resources/lib/hdCarWash.dll (which doesn't exist) and the delegate failed
-    # to allocate ("unable to read library plugin"). Root + lib/ matches the
-    # working repo layout.
-    PLUGINFO_TARGET = INSTALL_ROOT / "plugInfo.json"
-    PACKAGE_FILE = PACKAGES_DIR / "hdCarWash.json"
+        # Source files
+        self.DLL_SOURCE = self.BUILD_DIR / "plugin" / "hdCarWash" / "Release" / "hdCarWash.dll"
+        self.PLUGINFO_SOURCE = self.PLUGIN_DIR / "plugInfo.json"
 
-    # Debug log
-    DEBUG_LOG = Path("C:/Temp/hdcarwash_debug.txt")
+        # Target paths (Houdini user-pref directory, version-derived)
+        self.HOUDINI_USER_DIR = houdini_user_dir(self.version)
+        self.INSTALL_ROOT = self.HOUDINI_USER_DIR / "dso" / "usd" / "hdCarWash"
+        self.INSTALL_LIB = self.INSTALL_ROOT / "lib"
+        self.INSTALL_RESOURCES = self.INSTALL_ROOT / "resources"
+        self.INSTALL_SCHEMA = self.INSTALL_RESOURCES / "schema"
+        self.PACKAGES_DIR = self.HOUDINI_USER_DIR / "packages"
+
+        # Target files
+        self.DLL_TARGET = self.INSTALL_LIB / "hdCarWash.dll"
+        # plugInfo.json must sit at the plugin ROOT (not resources/): its
+        # LibraryPath "lib/hdCarWash.dll" is resolved relative to the plugInfo's own
+        # directory. With it in resources/, USD looked for the DLL at
+        # resources/lib/hdCarWash.dll (which doesn't exist) and the delegate failed
+        # to allocate ("unable to read library plugin"). Root + lib/ matches the
+        # working repo layout.
+        self.PLUGINFO_TARGET = self.INSTALL_ROOT / "plugInfo.json"
+        self.PACKAGE_FILE = self.PACKAGES_DIR / "hdCarWash.json"
+
+        # Debug log
+        self.DEBUG_LOG = Path("C:/Temp/hdcarwash_debug.txt")
 
 
 class Logger:
@@ -222,53 +292,52 @@ def step_copy_pluginfo(log: Logger, config: Config) -> bool:
         return False
 
 
-def step_create_schemas(log: Logger, config: Config) -> bool:
-    """Create schema placeholder files."""
-    log.step("Creating Schema Placeholders")
+def step_deploy_schema_plugin(log: Logger, config: Config) -> bool:
+    """Deploy the usdCarWash schema resource plugin so the CarWash tab appears.
 
-    schemas = {
-        "carWashSchema.usda": '''\
-#usda 1.0
-(
-    doc = "CarWash Renderer Schema - Placeholder"
-    subLayers = []
-)
+    Mirrors Houdini's usdKarma layout: a parent plugInfo.json under
+    <user>/dso/usd/ declares `{"Includes": ["*/resources/"]}`, and each plugin
+    ships its own plugInfo.json + generatedSchema.usda under <name>/resources/.
+    The schema's plugInfo carries the `SchemasForRenderers` map that tells
+    Houdini's Render Settings LOP to show the CarWashRenderSettingsAPI tab when
+    the HdCarWash renderer is selected.
+    """
+    log.step("Deploying usdCarWash Schema Plugin")
 
-def "CarWashSchema" (
-    doc = "Schema for CarWash renderer settings"
-)
-{
-}
-''',
-        "cognitiveSubstrate.usda": '''\
-#usda 1.0
-(
-    doc = "Cognitive Substrate Schema - Placeholder"
-    subLayers = []
-)
+    schema_src = config.PROJECT_ROOT / "usdCarWash" / "resources"
+    pluginfo_src = schema_src / "plugInfo.json"
+    generated_src = schema_src / "generatedSchema.usda"
 
-def "CognitiveSubstrate" (
-    doc = "Schema for cognitive substrate integration"
-)
-{
-}
-'''
-    }
+    if not pluginfo_src.exists():
+        log.error(f"Schema plugInfo not found: {pluginfo_src}")
+        log.error("Run usdGenSchema on schema/carWashRenderSettingsAPI.usda first.")
+        return False
 
     try:
-        config.INSTALL_SCHEMA.mkdir(parents=True, exist_ok=True)
+        # Parent plugInfo that scans <user>/dso/usd/*/resources/ for plugins.
+        usd_root = config.HOUDINI_USER_DIR / "dso" / "usd"
+        usd_root.mkdir(parents=True, exist_ok=True)
+        parent_pluginfo = usd_root / "plugInfo.json"
+        parent_pluginfo.write_text('{\n    "Includes": [ "*/resources/" ]\n}\n')
+        log.success(f"Created parent plugInfo: {parent_pluginfo}")
 
-        for filename, content in schemas.items():
-            schema_path = config.INSTALL_SCHEMA / filename
-            with open(schema_path, 'w') as f:
-                f.write(content)
-            log.success(f"Created: {filename}")
-            log.debug(f"  Path: {schema_path}")
+        # usdCarWash resource plugin: plugInfo + generatedSchema under resources/.
+        usd_carwash_resources = usd_root / "usdCarWash" / "resources"
+        usd_carwash_resources.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy2(pluginfo_src, usd_carwash_resources / "plugInfo.json")
+        log.success(f"Copied: usdCarWash plugInfo.json")
+
+        if generated_src.exists():
+            shutil.copy2(generated_src, usd_carwash_resources / "generatedSchema.usda")
+            log.success(f"Copied: generatedSchema.usda")
+        else:
+            log.warning(f"generatedSchema.usda missing: {generated_src}")
 
         return True
 
     except Exception as e:
-        log.error(f"Failed to create schema files: {e}")
+        log.error(f"Failed to deploy schema plugin: {e}")
         return False
 
 
@@ -276,14 +345,22 @@ def step_create_package(log: Logger, config: Config) -> bool:
     """Create or verify the Houdini package file."""
     log.step("Verifying Package Configuration")
 
-    # PXR_PLUGINPATH_NAME points at the plugin ROOT (which holds plugInfo.json),
-    # NOT the resources/ subdir — see the PLUGINFO_TARGET note above.
+    # PXR_PLUGINPATH_NAME needs two entries:
+    #   1. the hdCarWash plugin root (plugInfo at root, library plugin)
+    #   2. the parent <user>/dso/usd dir — its plugInfo declares
+    #      {"Includes": ["*/resources/"]} so USD scans usdCarWash/resources/
+    #      (the schema resource plugin that shows the CarWash tab).
     package_content = '''\
 {
     "env": [
         {
             "var": "PXR_PLUGINPATH_NAME",
             "value": "$HOUDINI_USER_PREF_DIR/dso/usd/hdCarWash",
+            "method": "append"
+        },
+        {
+            "var": "PXR_PLUGINPATH_NAME",
+            "value": "$HOUDINI_USER_PREF_DIR/dso/usd",
             "method": "append"
         }
     ]
@@ -313,8 +390,9 @@ def step_verify(log: Logger, config: Config) -> bool:
         ("DLL", config.DLL_TARGET),
         ("plugInfo.json", config.PLUGINFO_TARGET),
         ("Package file", config.PACKAGE_FILE),
-        ("carWashSchema.usda", config.INSTALL_SCHEMA / "carWashSchema.usda"),
-        ("cognitiveSubstrate.usda", config.INSTALL_SCHEMA / "cognitiveSubstrate.usda"),
+        ("Schema plugInfo", config.HOUDINI_USER_DIR / "dso" / "usd" / "usdCarWash" / "resources" / "plugInfo.json"),
+        ("generatedSchema.usda", config.HOUDINI_USER_DIR / "dso" / "usd" / "usdCarWash" / "resources" / "generatedSchema.usda"),
+        ("Parent plugInfo", config.HOUDINI_USER_DIR / "dso" / "usd" / "plugInfo.json"),
     ]
 
     all_ok = True
@@ -350,7 +428,7 @@ def print_summary(log: Logger, config: Config, success: bool):
         print(f"    {config.INSTALL_ROOT}")
         print()
         print("  Next steps:")
-        print("    1. Launch Houdini 21")
+        print("    1. Launch Houdini")
         print("    2. Create a Solaris stage")
         print("    3. Add Render Settings LOP")
         print("    4. Select 'CarWash Renderer' from dropdown")
@@ -368,10 +446,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python deploy_hdcarwash.py              # Full build and deploy
-  python deploy_hdcarwash.py --skip-build # Deploy only
-  python deploy_hdcarwash.py --verbose    # Verbose output
+  python deploy_hdcarwash.py                          # Full build and deploy (auto-detect)
+  python deploy_hdcarwash.py --houdini-version 21.0.729  # Pin a specific install
+  python deploy_hdcarwash.py --skip-build             # Deploy only
+  python deploy_hdcarwash.py --verbose                # Verbose output
 """
+    )
+    parser.add_argument(
+        "--houdini-version",
+        default=None,
+        help="Houdini version to deploy to (e.g. 21.0.729, 22.0.500). "
+             "Defaults to the newest installed Houdini.",
     )
     parser.add_argument(
         "--skip-build",
@@ -393,7 +478,11 @@ Examples:
     args = parser.parse_args()
 
     # Initialize
-    config = Config()
+    try:
+        config = Config(version=args.houdini_version)
+    except FileNotFoundError as e:
+        print(f"\n[ERROR] {e}\n")
+        return 1
     log_file = args.log_file or (config.PROJECT_ROOT / "deploy.log")
     log = Logger(verbose=args.verbose, log_file=log_file)
 
@@ -405,6 +494,8 @@ Examples:
 
     # Pre-flight checks
     log.info(f"Project root: {config.PROJECT_ROOT}")
+    log.info(f"Houdini install: {config.install_dir} (version {config.version})")
+    log.info(f"User-pref dir: {config.HOUDINI_USER_DIR}")
     log.info(f"Target: {config.INSTALL_ROOT}")
 
     # Check Houdini not running
@@ -441,8 +532,8 @@ Examples:
     if success and not step_create_package(log, config):
         success = False
 
-    # Step 5: Create schema placeholders
-    if success and not step_create_schemas(log, config):
+    # Step 5: Deploy the usdCarWash schema resource plugin
+    if success and not step_deploy_schema_plugin(log, config):
         success = False
 
     # Step 6: Verify installation

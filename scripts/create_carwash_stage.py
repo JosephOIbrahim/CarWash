@@ -1,9 +1,9 @@
-"""
+r"""
 HdCarWash Solaris Stage Builder
 Creates a production-quality LOPs network for testing the CarWash AI renderer.
 
 Run in Houdini Python Shell:
-    exec(open(r"C:\\Users\\User\\Downloads\\HDCARWAASH\\HdCarWash\\scripts\\create_carwash_stage.py").read())
+    exec(open(r"C:\\Users\\User\\CARWASH\\scripts\\create_carwash_stage.py").read())
 """
 
 import hou

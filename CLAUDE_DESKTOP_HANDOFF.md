@@ -78,15 +78,15 @@ hdCarWash/
 ### Source Files
 | File | Purpose |
 |------|---------|
-| `C:\Users\User\Downloads\HDCARWAASH\HdCarWash\plugin\hdCarWash\rendererPlugin.cpp` | TF_REGISTRY_FUNCTION |
-| `C:\Users\User\Downloads\HDCARWAASH\HdCarWash\plugin\plugInfo.json` | Source plugInfo |
-| `C:\Users\User\Downloads\HDCARWAASH\HdCarWash\schema\` | Placeholder schemas |
+| `C:\Users\User\CARWASH\plugin\hdCarWash\rendererPlugin.cpp` | TF_REGISTRY_FUNCTION |
+| `C:\Users\User\CARWASH\plugin\plugInfo.json` | Source plugInfo |
+| `C:\Users\User\CARWASH\schema\` | Placeholder schemas |
 
 ### Reference Files (Karma)
 | File | Purpose |
 |------|---------|
-| `C:\Program Files\Side Effects Software\Houdini 21.0.607\houdini\dso\usd_plugins\hdKarma\resources\plugInfo.json` | Hydra delegate registration |
-| `C:\Program Files\Side Effects Software\Houdini 21.0.607\houdini\dso\usd_plugins\usdKarma\resources\plugInfo.json` | KarmaRenderSettingsAPI schema |
+| `C:\Program Files\Side Effects Software\Houdini 21.0.729\houdini\dso\usd_plugins\hdKarma\resources\plugInfo.json` | Hydra delegate registration |
+| `C:\Program Files\Side Effects Software\Houdini 21.0.729\houdini\dso\usd_plugins\usdKarma\resources\plugInfo.json` | KarmaRenderSettingsAPI schema |
 
 ---
 
@@ -178,7 +178,7 @@ Add schema type registration:
 
 ```python
 import runpy
-runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\houdini\synapse_server.py")
+runpy.run_path(r"C:\Users\User\CARWASH\houdini\synapse_server.py")
 ```
 
 ### Available Commands
@@ -194,7 +194,7 @@ runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\houdini\synapse_se
 ### Client Script
 
 ```cmd
-python C:\Users\User\Downloads\HDCARWAASH\HdCarWash\automation\build_scene.py
+python C:\Users\User\CARWASH\automation\build_scene.py
 ```
 
 ---

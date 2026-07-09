@@ -1,4 +1,4 @@
-"""
+r"""
 CarWash Plugin Diagnostic Script
 ================================
 Run directly in Houdini Python Shell to diagnose why render settings tab
@@ -6,7 +6,7 @@ is not appearing.
 
 Usage in Houdini Python Shell:
     import runpy
-    runpy.run_path(r"C:\\Users\\User\\Downloads\\HDCARWAASH\\HdCarWash\\automation\\diagnose_carwash.py")
+    runpy.run_path(r"C:\\Users\\User\\CARWASH\\automation\\diagnose_carwash.py")
 """
 
 import hou

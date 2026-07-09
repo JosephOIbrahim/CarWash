@@ -88,7 +88,7 @@ async def main():
         print("\nERROR: Cannot connect to Synapse")
         print("\nStart Synapse in Houdini Python Shell:")
         print("  import runpy")
-        print('  runpy.run_path(r"C:\\Users\\User\\Downloads\\HDCARWAASH\\HdCarWash\\houdini\\synapse_server.py")')
+        print('  runpy.run_path(r"C:\\Users\\User\\CARWASH\\houdini\\synapse_server.py")')
 
 
 if __name__ == "__main__":

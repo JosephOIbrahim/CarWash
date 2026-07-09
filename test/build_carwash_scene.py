@@ -1,10 +1,10 @@
-"""
+r"""
 CarWash Test Scene Builder
 ==========================
 Run this in Houdini's Python Shell to create a test scene.
 
 In Houdini Python Shell, paste:
-    import runpy; runpy.run_path(r"C:\Users\User\Downloads\HDCARWAASH\HdCarWash\test\build_carwash_scene.py")
+    import runpy; runpy.run_path(r"C:\Users\User\CARWASH\test\build_carwash_scene.py")
 """
 
 import hou
